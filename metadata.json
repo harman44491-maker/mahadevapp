@@ -1,0 +1,8 @@
+{
+  "name": "Mahadev data service",
+  "description": "Offline-first customer data collection app for remote field operations with custom form builder and real-time cloud synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
