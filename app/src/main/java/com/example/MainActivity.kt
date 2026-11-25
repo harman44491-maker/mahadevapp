@@ -341,7 +341,7 @@ private fun ShortsMakerScreen() {
                 )
                 if (publishAt.isNotBlank()) Text("YouTube scheduled uploads are sent as Private until the scheduled publish time.")
                 Button(
-                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null && title.isNotBlank(),
+                    enabled = !busy && sessionToken.isNotBlank() && selectedVideo != null && title.isNotBlank(),
                     onClick = { runTask {
                         val uri = selectedVideo ?: error("Choose a video first")
                         val bytes = withContext(Dispatchers.IO) {
@@ -358,7 +358,7 @@ private fun ShortsMakerScreen() {
                             .addFormDataPart("video", selectedName, videoBody)
                             .build()
                         val req = Request.Builder().url("$API_BASE/api/youtube/upload")
-                            .header("x-app-api-key", apiKey).post(multipart).build()
+                            .header("Authorization", "Bearer $sessionToken").post(multipart).build()
                         val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
                             val text = r.body?.string().orEmpty()
                             if (!r.isSuccessful) error(JSONObject(text).optString("message", "Upload failed (${r.code})"))
