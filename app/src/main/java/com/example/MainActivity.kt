@@ -3,6 +3,10 @@ package com.example
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.content.ContentValues
+import android.provider.MediaStore
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -152,7 +156,65 @@ private fun ShortsMakerScreen() {
 
         Card {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("3. Upload Your Video", style = MaterialTheme.typography.titleMedium)
+                Text("3. Create Hindi Captioned Short", style = MaterialTheme.typography.titleMedium)
+                Text("Selected video ko 9:16 vertical format mein crop karein, Hindi speech captions burn karein, aur MP4 ko phone mein save karein.")
+                OutlinedButton(onClick = { picker.launch(arrayOf("video/*")) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Choose Source Video")
+                }
+                Text(selectedName, style = MaterialTheme.typography.bodySmall)
+                Button(
+                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null,
+                    onClick = { runTask {
+                        val uri = selectedVideo ?: error("Choose a source video first")
+                        val bytes = withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                ?: error("Could not read selected video")
+                        }
+                        if (bytes.size > 120 * 1024 * 1024) error("Source video must be under 120 MB for this free-hosting build.")
+                        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+                            .addFormDataPart("startSeconds", "0")
+                            .addFormDataPart("durationSeconds", "30")
+                            .addFormDataPart("video", selectedName, bytes.toRequestBody("video/mp4".toMediaType()))
+                            .build()
+                        val req = Request.Builder().url("$API_BASE/api/video/process")
+                            .header("x-app-api-key", apiKey).post(multipart).build()
+                        val processed = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            if (!r.isSuccessful) {
+                                val errorText = r.body?.string().orEmpty()
+                                val detail = runCatching { JSONObject(errorText).optString("message") }.getOrNull()
+                                error(detail?.takeIf { it.isNotBlank() } ?: "Short processing failed (" + r.code + ")")
+                            }
+                            r.body?.bytes() ?: error("Empty processed video")
+                        } }
+                        val filename = "Mahadev_Hindi_Short_" + System.currentTimeMillis() + ".mp4"
+                        withContext(Dispatchers.IO) {
+                            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                                val values = ContentValues().apply {
+                                    put(MediaStore.Video.Media.DISPLAY_NAME, filename)
+                                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/MahadevShorts")
+                                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                                }
+                                val outUri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: error("Could not create output file")
+                                context.contentResolver.openOutputStream(outUri)?.use { it.write(processed) } ?: error("Could not save processed video")
+                                values.clear()
+                                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                                context.contentResolver.update(outUri, values, null, null)
+                            } else {
+                                val folder = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "MahadevShorts")
+                                folder.mkdirs()
+                                File(folder, filename).writeBytes(processed)
+                            }
+                        }
+                        "Hindi captioned 9:16 Short saved to Movies/MahadevShorts (" + processed.size + " bytes)."
+                    } }, modifier = Modifier.fillMaxWidth()
+                ) { Text("Generate Hindi Short (30 sec)") }
+            }
+        }
+
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("4. Upload Your Video", style = MaterialTheme.typography.titleMedium)
                 Text("Upload only videos you own or are licensed to publish.")
                 OutlinedButton(onClick = { picker.launch(arrayOf("video/*")) }, modifier = Modifier.fillMaxWidth()) {
                     Text("Choose Video")
@@ -202,6 +264,6 @@ private fun ShortsMakerScreen() {
                 Text(message)
             }
         }
-        Text("Note: Trending shows public metadata only. It does not grant rights to download or repost videos. Automatic clip editing, Hindi captions, Facebook publishing and background scheduling are not included in this build yet.", style = MaterialTheme.typography.bodySmall)
+        Text("Note: Trending shows public metadata only. It does not grant rights to download or repost videos. Hindi Shorts processing requires Google Speech-to-Text credentials on the server. Facebook publishing requires a Page access token and Page permissions. Scheduled publishing is available when a publish time is provided to the API.", style = MaterialTheme.typography.bodySmall)
     }
 }
