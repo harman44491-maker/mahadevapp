@@ -75,6 +75,9 @@ function decryptSecret(payload) {
 
 async function initializeTokenStore() {
   if (!dbPool) return;
+  if (!TOKEN_ENCRYPTION_KEY || !/^[a-f0-9]{64}$/i.test(TOKEN_ENCRYPTION_KEY)) {
+    throw new Error("TOKEN_ENCRYPTION_KEY must be configured as a 64-character hexadecimal key before account connections can be enabled.");
+  }
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS app_users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
