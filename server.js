@@ -366,7 +366,9 @@ app.get("/auth/youtube", requireUser, async (req, res) => {
 app.get("/auth/youtube/callback", async (req, res) => {
   const { code, state, error } = req.query;
   if (error) return res.status(400).send("Google authorization was not completed: " + String(error));
-  const stateRecord = await consumeOAuthState("youtube", state);
+  let stateRecord;
+  try { stateRecord = await consumeOAuthState("youtube", state); }
+  catch (err) { console.error("Google OAuth state lookup failed:", err.message); return res.status(503).send("Secure OAuth state storage is temporarily unavailable. Please try again."); }
   if (!stateRecord || stateRecord.expiresAt < Date.now()) {
     return res.status(400).send("Invalid or expired OAuth state. Please start again at /auth/youtube.");
   }
@@ -421,7 +423,9 @@ app.get("/auth/facebook", requireUser, async (req, res) => {
 
 app.get("/auth/facebook/callback", async (req, res) => {
   const { code, state, error, error_description: errorDescription } = req.query;
-  const stateRecord = await consumeOAuthState("facebook", state);
+  let stateRecord;
+  try { stateRecord = await consumeOAuthState("facebook", state); }
+  catch (err) { console.error("Facebook OAuth state lookup failed:", err.message); return res.status(503).send("Secure OAuth state storage is temporarily unavailable. Please try again."); }
   if (error) return res.status(400).send("Facebook authorization was not completed: " + String(errorDescription || error));
   if (!stateRecord || stateRecord.expiresAt < Date.now()) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
   if (!code) return res.status(400).send("Missing Facebook authorization code.");
