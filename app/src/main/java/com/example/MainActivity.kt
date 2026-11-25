@@ -32,6 +32,60 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONArray
 import java.util.concurrent.TimeUnit
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+private const val SESSION_PREFS = "mahadev_secure_session"
+private const val SESSION_KEY_ALIAS = "mahadev_session_aes_key"
+
+private fun sessionKey(): SecretKey {
+    val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    val existing = store.getKey(SESSION_KEY_ALIAS, null) as? SecretKey
+    if (existing != null) return existing
+    val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+    generator.init(KeyGenParameterSpec.Builder(
+        SESSION_KEY_ALIAS,
+        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+    ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+        .setRandomizedEncryptionRequired(true)
+        .build())
+    return generator.generateKey()
+}
+
+private fun saveSession(context: android.content.Context, token: String) {
+    if (token.isBlank()) return
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.ENCRYPT_MODE, sessionKey())
+    val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
+    val packed = cipher.iv + encrypted
+    val encoded = Base64.encodeToString(packed, Base64.NO_WRAP)
+    context.getSharedPreferences(SESSION_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit().putString("token", encoded).apply()
+}
+
+private fun loadSession(context: android.content.Context): String {
+    return try {
+        val encoded = context.getSharedPreferences(SESSION_PREFS, android.content.Context.MODE_PRIVATE)
+            .getString("token", null) ?: return ""
+        val packed = Base64.decode(encoded, Base64.NO_WRAP)
+        if (packed.size <= 12) return ""
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, sessionKey(), GCMParameterSpec(128, packed.copyOfRange(0, 12)))
+        String(cipher.doFinal(packed.copyOfRange(12, packed.size)), Charsets.UTF_8)
+    } catch (_: Exception) { "" }
+}
+
+private fun clearSession(context: android.content.Context) {
+    context.getSharedPreferences(SESSION_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit().remove("token").apply()
+}
 
 private const val API_BASE = "https://mahadev-ai-shorts-maker-api.onrender.com"
 private val http = OkHttpClient.Builder()
@@ -51,7 +105,7 @@ class MainActivity : ComponentActivity() {
 private fun ShortsMakerScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var sessionToken by remember { mutableStateOf("") }
+    var sessionToken by remember { mutableStateOf(loadSession(context)) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
@@ -111,6 +165,7 @@ private fun ShortsMakerScreen() {
                                 text
                             } }
                             sessionToken = JSONObject(body).optString("token")
+                            saveSession(context, sessionToken)
                             "Login successful. Your account is ready."
                         } }, modifier = Modifier.weight(1f)) { Text("Log In") }
                         OutlinedButton(enabled = !busy, onClick = { runTask {
@@ -165,7 +220,7 @@ private fun ShortsMakerScreen() {
                         "Connected channel: $channel"
                     } }, modifier = Modifier.fillMaxWidth()) { Text("Check My Channel") }
                     if (channel.isNotBlank()) Text("Channel: $channel", color = MaterialTheme.colorScheme.primary)
-                    OutlinedButton(onClick = { sessionToken = ""; channel = ""; message = "Logged out." }, modifier = Modifier.fillMaxWidth()) { Text("Log Out") }
+                    OutlinedButton(onClick = { clearSession(context); sessionToken = ""; channel = ""; message = "Logged out." }, modifier = Modifier.fillMaxWidth()) { Text("Log Out") }
                 }
             }
         }
