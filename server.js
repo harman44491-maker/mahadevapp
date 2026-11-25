@@ -92,6 +92,15 @@ async function initializeTokenStore() {
     )
   `);
   await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS user_connections (
+      user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL CHECK (provider IN ('youtube', 'facebook')),
+      encrypted_value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, provider)
+    )
+  `);
+  await dbPool.query(`
     CREATE TABLE IF NOT EXISTS app_secrets (
       secret_name TEXT PRIMARY KEY,
       encrypted_value TEXT NOT NULL,
@@ -112,6 +121,19 @@ async function initializeTokenStore() {
 }
 
 
+async function saveUserConnection(userId, provider, value) {
+  if (!dbPool || !dbReady || !TOKEN_ENCRYPTION_KEY) throw new Error("SECURE_CONNECTION_STORAGE_NOT_CONFIGURED");
+  const encrypted = encryptSecret(value);
+  await dbPool.query(`INSERT INTO user_connections (user_id, provider, encrypted_value, updated_at)
+    VALUES ($1, $2, $3, NOW()) ON CONFLICT (user_id, provider)
+    DO UPDATE SET encrypted_value = EXCLUDED.encrypted_value, updated_at = NOW()`, [userId, provider, encrypted]);
+  return "postgres_encrypted";
+}
+async function getUserConnection(userId, provider) {
+  if (!dbPool || !dbReady || !TOKEN_ENCRYPTION_KEY) return null;
+  const result = await dbPool.query("SELECT encrypted_value FROM user_connections WHERE user_id = $1 AND provider = $2", [userId, provider]);
+  return result.rows[0] ? decryptSecret(result.rows[0].encrypted_value) : null;
+}
 async function saveFacebookConnection(connection) {
   if (dbPool && TOKEN_ENCRYPTION_KEY && dbReady) {
     const encrypted = encryptSecret(connection);
@@ -143,7 +165,7 @@ app.get("/", (_req, res) => {
     name: "Mahadev AI Shorts Maker API",
     status: "running",
     version: "1.2.0",
-    endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/auth/facebook", "/auth/facebook/callback", "/api/facebook/pages", "/api/facebook/select-page", "/api/youtube/channel", "/api/youtube/upload", "/api/video/process", "/api/facebook/reels", "/api/status/integrations"]
+    endpoints: ["/health", "/api/auth/signup", "/api/auth/login", "/api/auth/me", "/api/auth/logout", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/auth/facebook", "/auth/facebook/callback", "/api/facebook/pages", "/api/facebook/select-page", "/api/youtube/channel", "/api/youtube/upload", "/api/video/process", "/api/facebook/reels", "/api/status/integrations"]
   });
 });
 
