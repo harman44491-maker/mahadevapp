@@ -182,6 +182,23 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "mahadev-ai-shorts-maker", time: new Date().toISOString() });
 });
 
+const authAttempts = new Map();
+function authRateLimit(req, res, next) {
+  const key = String(req.ip || req.socket?.remoteAddress || "unknown");
+  const now = Date.now();
+  const record = authAttempts.get(key) || { count: 0, resetAt: now + 15 * 60 * 1000 };
+  if (record.resetAt <= now) { record.count = 0; record.resetAt = now + 15 * 60 * 1000; }
+  record.count += 1;
+  authAttempts.set(key, record);
+  if (record.count > 20) {
+    res.set("Retry-After", String(Math.ceil((record.resetAt - now) / 1000)));
+    return res.status(429).json({ error: "TOO_MANY_AUTH_ATTEMPTS", message: "Too many login attempts. Please wait and try again." });
+  }
+  if (authAttempts.size > 5000) {
+    for (const [ip, item] of authAttempts) if (item.resetAt <= now) authAttempts.delete(ip);
+  }
+  next();
+}
 function normalizeEmail(value) { return String(value || "").trim().toLowerCase(); }
 function validPassword(value) { return typeof value === "string" && value.length >= 8 && value.length <= 128; }
 async function hashPassword(password) {
@@ -205,7 +222,7 @@ async function createSession(userId) {
   await dbPool.query("INSERT INTO app_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)", [hashSession(token), userId, expiresAt]);
   return { token, expiresAt };
 }
-app.post("/api/auth/signup", async (req, res) => {
+app.post("/api/auth/signup", authRateLimit, async (req, res) => {
   if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE", message: "Account service is temporarily unavailable. Please try again later." });
   const email = normalizeEmail(req.body.email);
   const password = req.body.password;
@@ -222,7 +239,7 @@ app.post("/api/auth/signup", async (req, res) => {
     res.status(500).json({ error: "SIGNUP_FAILED", message: "Could not create account. Please try again." });
   }
 });
-app.post("/api/auth/login", async (req, res) => {
+app.post("/api/auth/login", authRateLimit, async (req, res) => {
   if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE", message: "Account service is temporarily unavailable. Please try again later." });
   const email = normalizeEmail(req.body.email);
   const password = req.body.password;
