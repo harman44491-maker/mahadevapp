@@ -179,6 +179,7 @@ private fun ShortsMakerScreen() {
                                 text
                             } }
                             sessionToken = JSONObject(body).optString("token")
+                            saveSession(context, sessionToken)
                             "Account created successfully."
                         } }, modifier = Modifier.weight(1f)) { Text("Create Account") }
                     }
