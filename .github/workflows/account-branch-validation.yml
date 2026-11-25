@@ -27,11 +27,14 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools platforms;android-36 build-tools;36.0.0
+          packages: |
+            platform-tools
+            platforms;android-36
+            build-tools;36.0.0
           cmdline-tools-version: latest
       - name: Install Gradle 9.3.1
         run: |
           curl -L --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
           unzip -q /tmp/gradle.zip -d "$RUNNER_TEMP"
       - name: Build debug APK
-        run: "$RUNNER_TEMP/gradle-9.3.1/bin/gradle" :app:assembleDebug --no-daemon
+        run: '"$RUNNER_TEMP/gradle-9.3.1/bin/gradle" :app:assembleDebug --no-daemon'
