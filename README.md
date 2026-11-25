@@ -1,30 +1,49 @@
-# Mahadev AI Shorts Maker — Backend
+# Mahadev AI Shorts Maker
 
-Node.js/Express API starter for the Android app.
+Android app + Node.js API for YouTube discovery and publishing of videos you own or are licensed to use.
 
-## Render environment variables
-- `YOUTUBE_API_KEY` — YouTube Data API v3 key
-- `GOOGLE_CLIENT_ID` — OAuth 2.0 Web application client ID
-- `GOOGLE_CLIENT_SECRET` — OAuth 2.0 client secret
-- `GOOGLE_REDIRECT_URI` — `https://mahadev-ai-shorts-maker-api.onrender.com/auth/youtube/callback`
+## Current features
+- Android dashboard branded **Mahadev AI Shorts Maker**.
+- Fetches India's public YouTube most-popular video metadata.
+- Google OAuth connection for the user's YouTube channel.
+- Encrypted OAuth token storage in PostgreSQL using AES-256-GCM.
+- Protected channel-details endpoint.
+- Protected YouTube video upload endpoint with title, description and Private / Unlisted / Public visibility.
+- Android video picker and upload form.
 
-Never commit API keys or OAuth secrets.
+## Render environment
+Required:
+- `YOUTUBE_API_KEY`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI=https://mahadev-ai-shorts-maker-api.onrender.com/auth/youtube/callback`
+- `DATABASE_URL` (Neon pooled PostgreSQL URL)
+- `TOKEN_ENCRYPTION_KEY` (64 hexadecimal characters; keep stable or previously encrypted tokens cannot be decrypted)
+- `APP_API_KEY` (long random secret required by the app for protected channel and upload endpoints)
 
-## YouTube OAuth setup
-1. In Google Cloud, create an OAuth client of type **Web application**.
-2. Add this exact Authorized redirect URI:
-   `https://mahadev-ai-shorts-maker-api.onrender.com/auth/youtube/callback`
-3. Add the Client ID and Client Secret to Render Environment using the variable names above.
-4. Open `/auth/youtube` to begin channel authorization.
-5. Check `/api/status/integrations` for connection status.
+Never commit secrets or put them in source code. If a secret is exposed, rotate it.
 
-## Endpoints
-- `GET /` — service info
-- `GET /health` — health check
-- `GET /api/youtube/trending?regionCode=IN&maxResults=20` — public YouTube most-popular metadata
-- `GET /auth/youtube` — start YouTube OAuth
-- `GET /auth/youtube/callback` — OAuth callback
-- `GET /api/status/integrations` — integration readiness
+## Google OAuth
+OAuth consent screen must include the account as a test user while the app is in Testing mode. Authorized redirect URI must exactly match:
+`https://mahadev-ai-shorts-maker-api.onrender.com/auth/youtube/callback`
+
+## API endpoints
+- `GET /` service information
+- `GET /health` health check
+- `GET /api/youtube/trending?regionCode=IN&maxResults=20` public trending metadata
+- `GET /auth/youtube` start Google OAuth
+- `GET /auth/youtube/callback` OAuth callback
+- `GET /api/status/integrations` integration status
+- `GET /api/youtube/channel` requires `x-app-api-key`
+- `POST /api/youtube/upload` multipart form fields `video`, `title`, `description`, `privacyStatus`; requires `x-app-api-key`
+
+## Build Android APK
+Pushes to main run the Android build workflow. The debug APK is uploaded as a GitHub Actions artifact named `mahadev-ai-shorts-maker-debug-apk`.
 
 ## Important limitations
-This starter retrieves public YouTube video metadata and supports the OAuth authorization-code handshake. OAuth tokens are currently stored in memory only and are lost on service restart; add encrypted persistent storage before production use. Actual video upload endpoints, FFmpeg clip processing, and Meta Page publishing are not implemented yet. Do not download or repost other creators' videos without permission; use owned or licensed content.
+- Trending API returns metadata only; it does not provide rights to download or repost videos.
+- The Android build currently uploads a selected source video. It does not yet auto-generate clips, crop/reframe to 9:16, burn Hindi subtitles, or schedule Shorts.
+- Facebook Page OAuth/publishing is not implemented.
+- Google OAuth in Testing mode is restricted to added test users. Public release may require Google's verification depending on scopes.
+- Render Free services may sleep and have limited CPU/RAM; large video uploads can time out or exceed memory limits.
+- Upload only content you own or have explicit permission to publish.
