@@ -118,6 +118,7 @@ private fun ShortsMakerScreen() {
     var busy by remember { mutableStateOf(false) }
     var trending by remember { mutableStateOf(listOf<Triple<String, String, String>>()) }
     var channel by remember { mutableStateOf("") }
+    var facebookPages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -209,6 +210,34 @@ private fun ShortsMakerScreen() {
                         withContext(Dispatchers.Main) { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                         "Facebook sign-in opened. Complete it in your browser, then return to the app."
                     } }, modifier = Modifier.fillMaxWidth()) { Text("Connect Facebook Page") }
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/facebook/pages").header("Authorization", "Bearer $sessionToken").get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Could not load Facebook Pages"))
+                            text
+                        } }
+                        val arr = JSONObject(body).optJSONArray("pages") ?: JSONArray()
+                        facebookPages = (0 until arr.length()).map { i ->
+                            val page = arr.getJSONObject(i)
+                            page.optString("id") to page.optString("name")
+                        }
+                        if (facebookPages.isEmpty()) "No Facebook Pages found for this account."
+                        else "Found ${facebookPages.size} Facebook Page(s). Select one below."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Load My Facebook Pages") }
+                    facebookPages.forEach { page ->
+                        OutlinedButton(enabled = !busy, onClick = { runTask {
+                            val payload = JSONObject().put("pageId", page.first).toString()
+                            val req = Request.Builder().url("$API_BASE/api/facebook/select-page")
+                                .header("Authorization", "Bearer $sessionToken")
+                                .post(payload.toRequestBody("application/json".toMediaType())).build()
+                            withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                                val text = r.body?.string().orEmpty()
+                                if (!r.isSuccessful) error(JSONObject(text).optString("message", "Page selection failed"))
+                            } }
+                            "Facebook Page selected: ${page.second}"
+                        } }, modifier = Modifier.fillMaxWidth()) { Text("Select Page: ${page.second}") }
+                    }
                     Button(enabled = !busy, onClick = { runTask {
                         val req = Request.Builder().url("$API_BASE/api/youtube/channel").header("Authorization", "Bearer $sessionToken").get().build()
                         val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
