@@ -200,7 +200,7 @@ app.post("/api/auth/signup", async (req, res) => {
   if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE", message: "Account service is temporarily unavailable. Please try again later." });
   const email = normalizeEmail(req.body.email);
   const password = req.body.password;
-  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "INVALID_EMAIL", message: "Enter a valid email address." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "INVALID_EMAIL", message: "Enter a valid email address." });
   if (!validPassword(password)) return res.status(400).json({ error: "INVALID_PASSWORD", message: "Password must be 8 to 128 characters." });
   try {
     const passwordHash = await hashPassword(password);
