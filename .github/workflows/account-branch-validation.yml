@@ -25,13 +25,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platform-tools
-            platforms;android-36
-            build-tools;36.0.0
-          cmdline-tools-version: latest
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
       - name: Install Gradle 9.3.1
         run: |
           curl -L --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
