@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
@@ -12,15 +13,92 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ||
   "https://mahadev-ai-shorts-maker-api.onrender.com/auth/youtube/callback";
+const TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || "";
+const DATABASE_URL = process.env.DATABASE_URL || "";
 
 const pendingOAuthStates = new Map();
-let youtubeTokens = null; // In-memory only; use encrypted persistent storage before production.
+let youtubeTokens = null;
+let dbReady = false;
+let dbPool = null;
+
+if (DATABASE_URL) {
+  dbPool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+    max: 3,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000
+  });
+}
+
+function encryptSecret(value) {
+  if (!TOKEN_ENCRYPTION_KEY || !/^[a-f0-9]{64}$/i.test(TOKEN_ENCRYPTION_KEY)) {
+    throw new Error("TOKEN_ENCRYPTION_KEY must be a 64-character hexadecimal key.");
+  }
+  const key = Buffer.from(TOKEN_ENCRYPTION_KEY, "hex");
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return JSON.stringify({
+    version: 1,
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    data: encrypted.toString("base64")
+  });
+}
+
+function decryptSecret(payload) {
+  const item = typeof payload === "string" ? JSON.parse(payload) : payload;
+  const key = Buffer.from(TOKEN_ENCRYPTION_KEY, "hex");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(item.iv, "base64"));
+  decipher.setAuthTag(Buffer.from(item.tag, "base64"));
+  const plain = Buffer.concat([
+    decipher.update(Buffer.from(item.data, "base64")),
+    decipher.final()
+  ]);
+  return JSON.parse(plain.toString("utf8"));
+}
+
+async function initializeTokenStore() {
+  if (!dbPool || !TOKEN_ENCRYPTION_KEY) return;
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS app_secrets (
+      secret_name TEXT PRIMARY KEY,
+      encrypted_value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  const result = await dbPool.query(
+    "SELECT encrypted_value FROM app_secrets WHERE secret_name = $1",
+    ["youtube_oauth_tokens"]
+  );
+  if (result.rows[0]) youtubeTokens = decryptSecret(result.rows[0].encrypted_value);
+  dbReady = true;
+  console.log("Encrypted token store initialized.");
+}
+
+async function saveYoutubeTokens(tokens) {
+  if (dbPool && TOKEN_ENCRYPTION_KEY && dbReady) {
+    const encrypted = encryptSecret(tokens);
+    await dbPool.query(
+      `INSERT INTO app_secrets (secret_name, encrypted_value, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (secret_name)
+       DO UPDATE SET encrypted_value = EXCLUDED.encrypted_value, updated_at = NOW()`,
+      ["youtube_oauth_tokens", encrypted]
+    );
+    youtubeTokens = tokens;
+    return "postgres_encrypted";
+  }
+  youtubeTokens = tokens;
+  return "memory_only";
+}
 
 app.get("/", (_req, res) => {
   res.json({
     name: "Mahadev AI Shorts Maker API",
     status: "running",
-    version: "1.1.0",
+    version: "1.2.0",
     endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/api/status/integrations"]
   });
 });
@@ -113,15 +191,20 @@ app.get("/auth/youtube/callback", async (req, res) => {
       error: "OAUTH_TOKEN_EXCHANGE_FAILED",
       message: tokens.error_description || tokens.error || "Token exchange failed"
     });
-    youtubeTokens = {
+    const nextTokens = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || youtubeTokens?.refresh_token || null,
       expires_at: Date.now() + (Number(tokens.expires_in || 3600) * 1000),
       scope: tokens.scope || ""
     };
-    res.send("<h2>YouTube connected successfully</h2><p>You may close this page and return to Mahadev AI Shorts Maker.</p><p>Note: this starter currently keeps tokens in memory; reconnect after a server restart. Persistent encrypted token storage must be added before production use.</p>");
+    const storage = await saveYoutubeTokens(nextTokens);
+    const message = storage === "postgres_encrypted"
+      ? "Your YouTube connection is saved with encrypted persistent storage."
+      : "Connected, but token storage is currently memory-only. Configure DATABASE_URL and TOKEN_ENCRYPTION_KEY in Render before production use.";
+    res.send("<h2>YouTube connected successfully</h2><p>You may close this page and return to Mahadev AI Shorts Maker.</p><p>" + message + "</p>");
   } catch (err) {
-    res.status(502).send("Could not exchange OAuth code: " + err.message);
+    console.error("OAuth callback failed:", err.message);
+    res.status(502).send("Could not complete secure token storage. Check server configuration and logs.");
   }
 });
 
@@ -130,12 +213,18 @@ app.get("/api/status/integrations", (_req, res) => {
     youtubeTrending: Boolean(YOUTUBE_API_KEY),
     youtubeOAuthConfigured: Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
     youtubeConnected: Boolean(youtubeTokens?.refresh_token || youtubeTokens?.access_token),
-    youtubeTokenStorage: "memory_only_restart_will_disconnect",
+    youtubeTokenStorage: dbReady ? "postgres_encrypted" : "memory_only_database_not_configured",
     facebookPublishing: "meta_oauth_not_configured",
     clipProcessing: "worker_not_configured"
   });
 });
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
   console.log(`Mahadev AI Shorts Maker API listening on ${PORT}`);
+  try {
+    await initializeTokenStore();
+  } catch (error) {
+    dbReady = false;
+    console.error("Encrypted token store initialization failed:", error.message);
+  }
 });
