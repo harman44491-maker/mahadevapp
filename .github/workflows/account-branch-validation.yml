@@ -35,9 +35,11 @@ jobs:
           unzip -q /tmp/gradle.zip -d "$RUNNER_TEMP"
       - name: Build debug APK
         run: '"$RUNNER_TEMP/gradle-9.3.1/bin/gradle" :app:assembleDebug --no-daemon'
-      - name: Upload debug APK artifact
+      - name: Rename APK for users
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Mahadev-AI-Shorts-Maker.apk
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mahadev-ai-shorts-maker-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Mahadev-AI-Shorts-Maker-APK
+          path: app/build/outputs/apk/debug/Mahadev-AI-Shorts-Maker.apk
           if-no-files-found: error
