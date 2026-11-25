@@ -18,6 +18,10 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ||
   "https://mahadev-ai-shorts-maker-api.onrender.com/auth/youtube/callback";
+const META_APP_ID = process.env.META_APP_ID || "";
+const META_APP_SECRET = process.env.META_APP_SECRET || "";
+const META_REDIRECT_URI = process.env.META_REDIRECT_URI || "https://mahadev-ai-shorts-maker-api.onrender.com/auth/facebook/callback";
+const META_CONFIG_ID = process.env.META_CONFIG_ID || "";
 const TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || "";
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const APP_API_KEY = process.env.APP_API_KEY || "";
@@ -25,6 +29,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 128
 
 const pendingOAuthStates = new Map();
 let youtubeTokens = null;
+let facebookConnection = { userToken: null, pages: [], selectedPage: null };
 let dbReady = false;
 let dbPool = null;
 
@@ -80,8 +85,20 @@ async function initializeTokenStore() {
     ["youtube_oauth_tokens"]
   );
   if (result.rows[0]) youtubeTokens = decryptSecret(result.rows[0].encrypted_value);
+  const fbResult = await dbPool.query("SELECT encrypted_value FROM app_secrets WHERE secret_name = $1", ["facebook_connection"]);
+  if (fbResult.rows[0]) facebookConnection = decryptSecret(fbResult.rows[0].encrypted_value);
   dbReady = true;
   console.log("Encrypted token store initialized.");
+}
+
+
+async function saveFacebookConnection(connection) {
+  if (dbPool && TOKEN_ENCRYPTION_KEY && dbReady) {
+    const encrypted = encryptSecret(connection);
+    await dbPool.query("INSERT INTO app_secrets (secret_name, encrypted_value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (secret_name) DO UPDATE SET encrypted_value = EXCLUDED.encrypted_value, updated_at = NOW()", ["facebook_connection", encrypted]);
+  }
+  facebookConnection = connection;
+  return dbPool && TOKEN_ENCRYPTION_KEY && dbReady ? "postgres_encrypted" : "memory_only";
 }
 
 async function saveYoutubeTokens(tokens) {
@@ -106,7 +123,7 @@ app.get("/", (_req, res) => {
     name: "Mahadev AI Shorts Maker API",
     status: "running",
     version: "1.2.0",
-    endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/api/youtube/channel", "/api/youtube/upload", "/api/video/process", "/api/facebook/reels", "/api/status/integrations"]
+    endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/auth/facebook", "/auth/facebook/callback", "/api/facebook/pages", "/api/facebook/select-page", "/api/youtube/channel", "/api/youtube/upload", "/api/video/process", "/api/facebook/reels", "/api/status/integrations"]
   });
 });
 
@@ -216,6 +233,66 @@ app.get("/auth/youtube/callback", async (req, res) => {
 });
 
 
+
+app.get("/auth/facebook", (req, res) => {
+  if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_OAUTH_NOT_CONFIGURED", message: "Set META_APP_ID, META_APP_SECRET and META_REDIRECT_URI in Render Environment." });
+  const state = crypto.randomBytes(32).toString("hex");
+  pendingOAuthStates.set("facebook:" + state, Date.now() + 10 * 60 * 1000);
+  const authUrl = new URL("https://www.facebook.com/" + META_GRAPH_VERSION + "/dialog/oauth");
+  const params = { client_id: META_APP_ID, redirect_uri: META_REDIRECT_URI, response_type: "code", scope: "pages_show_list,pages_read_engagement,pages_manage_posts", state };
+  if (META_CONFIG_ID) params.config_id = META_CONFIG_ID;
+  authUrl.search = new URLSearchParams(params);
+  res.redirect(authUrl.toString());
+});
+
+app.get("/auth/facebook/callback", async (req, res) => {
+  const { code, state, error, error_description: errorDescription } = req.query;
+  const stateKey = "facebook:" + String(state || "");
+  const expiresAt = pendingOAuthStates.get(stateKey);
+  pendingOAuthStates.delete(stateKey);
+  if (error) return res.status(400).send("Facebook authorization was not completed: " + String(errorDescription || error));
+  if (!expiresAt || expiresAt < Date.now()) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
+  if (!code) return res.status(400).send("Missing Facebook authorization code.");
+  try {
+    const tokenUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/oauth/access_token");
+    tokenUrl.search = new URLSearchParams({ client_id: META_APP_ID, client_secret: META_APP_SECRET, redirect_uri: META_REDIRECT_URI, code: String(code) });
+    const tokenResponse = await fetch(tokenUrl);
+    const tokenData = await tokenResponse.json();
+    if (!tokenResponse.ok || !tokenData.access_token) throw new Error(tokenData.error?.message || "Facebook token exchange failed.");
+    let userToken = tokenData.access_token;
+    const exchangeUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/oauth/access_token");
+    exchangeUrl.search = new URLSearchParams({ grant_type: "fb_exchange_token", client_id: META_APP_ID, client_secret: META_APP_SECRET, fb_exchange_token: userToken });
+    const exchangeResponse = await fetch(exchangeUrl);
+    const exchangeData = await exchangeResponse.json();
+    if (exchangeResponse.ok && exchangeData.access_token) userToken = exchangeData.access_token;
+    const accountsUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/me/accounts");
+    accountsUrl.search = new URLSearchParams({ fields: "id,name,access_token,tasks", access_token: userToken });
+    const accountsResponse = await fetch(accountsUrl);
+    const accountsData = await accountsResponse.json();
+    if (!accountsResponse.ok) throw new Error(accountsData.error?.message || "Could not retrieve Facebook Pages.");
+    const pages = (accountsData.data || []).map(p => ({ id: p.id, name: p.name, access_token: p.access_token, tasks: p.tasks || [] }));
+    const storage = await saveFacebookConnection({ userToken, pages, selectedPage: null });
+    res.send("<h2>Facebook connected</h2><p>" + pages.length + " Page(s) found. Return to Mahadev AI Shorts Maker and select the Page to publish Reels.</p><p>Token storage: " + storage + ".</p>");
+  } catch (err) {
+    console.error("Facebook OAuth callback failed:", err.message);
+    res.status(502).send("Facebook connection failed. Check Meta permissions, redirect URI and Render settings.");
+  }
+});
+
+app.get("/api/facebook/pages", requireAppKey, (_req, res) => {
+  res.json({ connected: Boolean(facebookConnection.userToken), pages: (facebookConnection.pages || []).map(p => ({ id: p.id, name: p.name, tasks: p.tasks })) });
+});
+
+app.post("/api/facebook/select-page", requireAppKey, async (req, res) => {
+  const pageId = String(req.body.pageId || "");
+  const page = (facebookConnection.pages || []).find(p => p.id === pageId);
+  if (!page) return res.status(404).json({ error: "FACEBOOK_PAGE_NOT_FOUND" });
+  if (!(page.tasks || []).some(task => ["CREATE_CONTENT", "MANAGE"].includes(task))) return res.status(403).json({ error: "FACEBOOK_PAGE_PERMISSION_MISSING", message: "The selected Page does not grant content creation or management access." });
+  const next = { ...facebookConnection, selectedPage: { id: page.id, name: page.name, access_token: page.access_token } };
+  const storage = await saveFacebookConnection(next);
+  res.json({ success: true, page: { id: page.id, name: page.name }, tokenStorage: storage });
+});
+
 function requireAppKey(req, res, next) {
   const supplied = req.get("x-app-api-key") || "";
   if (!APP_API_KEY || supplied.length !== APP_API_KEY.length ||
@@ -302,8 +379,8 @@ app.post("/api/video/process", requireAppKey, upload.single("video"), async (req
 });
 
 app.post("/api/facebook/reels", requireAppKey, upload.single("video"), async (req, res) => {
-  const pageId = process.env.FACEBOOK_PAGE_ID || "";
-  const pageToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || "";
+  const pageId = facebookConnection.selectedPage?.id || process.env.FACEBOOK_PAGE_ID || "";
+  const pageToken = facebookConnection.selectedPage?.access_token || process.env.FACEBOOK_PAGE_ACCESS_TOKEN || "";
   if (!pageId || !pageToken) return res.status(503).json({ error: "FACEBOOK_NOT_CONFIGURED", message: "Add FACEBOOK_PAGE_ID and FACEBOOK_PAGE_ACCESS_TOKEN in Render after granting Page publishing permissions." });
   if (!req.file) return res.status(400).json({ error: "VIDEO_REQUIRED" });
   const title = String(req.body.title || "Mahadev AI Short").slice(0, 100);
@@ -356,11 +433,15 @@ app.get("/api/status/integrations", (_req, res) => {
     youtubeConnected: Boolean(youtubeTokens?.refresh_token || youtubeTokens?.access_token),
     youtubeUploadConfigured: Boolean(APP_API_KEY),
     youtubeTokenStorage: dbReady ? "postgres_encrypted" : "memory_only_database_not_configured",
-    facebookPublishing: Boolean(process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN),
+    facebookOAuthConfigured: Boolean(META_APP_ID && META_APP_SECRET),
+    facebookConnected: Boolean(facebookConnection.userToken),
+    facebookPageSelected: Boolean(facebookConnection.selectedPage?.id || (process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN)),
+    facebookTokenStorage: dbReady && facebookConnection.userToken ? "postgres_encrypted" : "memory_only_or_not_connected",
+    facebookPublishing: Boolean((facebookConnection.selectedPage?.id && facebookConnection.selectedPage?.access_token) || (process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN)),
     hindiSpeechToText: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     clipProcessing: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     scheduledYouTubePublishing: Boolean(youtubeTokens?.refresh_token),
-    scheduledFacebookPublishing: Boolean(process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN)
+    scheduledFacebookPublishing: Boolean((facebookConnection.selectedPage?.id && facebookConnection.selectedPage?.access_token) || (process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN))
   });
 });
 
