@@ -188,7 +188,7 @@ private fun ShortsMakerScreen() {
                             r.body?.bytes() ?: error("Empty processed video")
                         } }
                         val filename = "Mahadev_Hindi_Short_" + System.currentTimeMillis() + ".mp4"
-                        withContext(Dispatchers.IO) {
+                        val savedUri = withContext(Dispatchers.IO) {
                             if (android.os.Build.VERSION.SDK_INT >= 29) {
                                 val values = ContentValues().apply {
                                     put(MediaStore.Video.Media.DISPLAY_NAME, filename)
@@ -201,13 +201,18 @@ private fun ShortsMakerScreen() {
                                 values.clear()
                                 values.put(MediaStore.Video.Media.IS_PENDING, 0)
                                 context.contentResolver.update(outUri, values, null, null)
+                                outUri
                             } else {
                                 val folder = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "MahadevShorts")
                                 folder.mkdirs()
-                                File(folder, filename).writeBytes(processed)
+                                val outputFile = File(folder, filename)
+                                outputFile.writeBytes(processed)
+                                Uri.fromFile(outputFile)
                             }
                         }
-                        "Hindi captioned 9:16 Short saved to Movies/MahadevShorts (" + processed.size + " bytes)."
+                        selectedVideo = savedUri
+                        selectedName = filename
+                        "Hindi captioned 9:16 Short saved and selected for publishing (" + processed.size + " bytes)."
                     } }, modifier = Modifier.fillMaxWidth()
                 ) { Text("Generate Hindi Short (30 sec)") }
             }
