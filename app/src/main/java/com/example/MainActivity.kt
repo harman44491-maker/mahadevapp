@@ -240,6 +240,7 @@ private fun ShortsMakerScreen() {
                     placeholder = { Text("2026-11-26T18:30:00+05:30") },
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (publishAt.isNotBlank()) Text("YouTube scheduled uploads are sent as Private until the scheduled publish time.")
                 Button(
                     enabled = !busy && apiKey.isNotBlank() && selectedVideo != null && title.isNotBlank(),
                     onClick = { runTask {
@@ -253,7 +254,7 @@ private fun ShortsMakerScreen() {
                         val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
                             .addFormDataPart("title", title)
                             .addFormDataPart("description", description)
-                             .addFormDataPart("privacyStatus", privacy)
+                             .addFormDataPart("privacyStatus", if (publishAt.isNotBlank()) "private" else privacy)
                             .apply { if (publishAt.isNotBlank()) addFormDataPart("publishAt", publishAt.trim()) }
                             .addFormDataPart("video", selectedName, videoBody)
                             .build()
