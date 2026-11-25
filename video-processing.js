@@ -86,7 +86,7 @@ async function makeHindiShort(inputBuffer, options = {}) {
     await runFfmpeg([
       "-y", "-ss", String(start), "-i", input, "-t", String(duration),
       "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles='" + escaped + "':force_style='FontName=Noto Sans Devanagari,FontSize=18,Outline=2,Shadow=1,Alignment=2,MarginV=110'",
-      "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+      "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2",
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", output
     ]);
     return { buffer: await fs.readFile(output), durationSeconds: duration, subtitleFormat: "Hindi SRT burned into video" };
