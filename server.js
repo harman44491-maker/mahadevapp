@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const { promisify } = require("util");
+const scryptAsync = promisify(crypto.scrypt);
 const { Pool } = require("pg");
 const { google } = require("googleapis");
 const multer = require("multer");
@@ -72,7 +74,23 @@ function decryptSecret(payload) {
 }
 
 async function initializeTokenStore() {
-  if (!dbPool || !TOKEN_ENCRYPTION_KEY) return;
+  if (!dbPool) return;
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS app_users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS app_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS app_secrets (
       secret_name TEXT PRIMARY KEY,
@@ -80,13 +98,15 @@ async function initializeTokenStore() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-  const result = await dbPool.query(
-    "SELECT encrypted_value FROM app_secrets WHERE secret_name = $1",
-    ["youtube_oauth_tokens"]
-  );
-  if (result.rows[0]) youtubeTokens = decryptSecret(result.rows[0].encrypted_value);
-  const fbResult = await dbPool.query("SELECT encrypted_value FROM app_secrets WHERE secret_name = $1", ["facebook_connection"]);
-  if (fbResult.rows[0]) facebookConnection = decryptSecret(fbResult.rows[0].encrypted_value);
+  if (TOKEN_ENCRYPTION_KEY && /^[a-f0-9]{64}$/i.test(TOKEN_ENCRYPTION_KEY)) {
+    const result = await dbPool.query(
+      "SELECT encrypted_value FROM app_secrets WHERE secret_name = $1",
+      ["youtube_oauth_tokens"]
+    );
+    if (result.rows[0]) youtubeTokens = decryptSecret(result.rows[0].encrypted_value);
+    const fbResult = await dbPool.query("SELECT encrypted_value FROM app_secrets WHERE secret_name = $1", ["facebook_connection"]);
+    if (fbResult.rows[0]) facebookConnection = decryptSecret(fbResult.rows[0].encrypted_value);
+  }
   dbReady = true;
   console.log("Encrypted token store initialized.");
 }
@@ -130,6 +150,81 @@ app.get("/", (_req, res) => {
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "mahadev-ai-shorts-maker", time: new Date().toISOString() });
 });
+
+function normalizeEmail(value) { return String(value || "").trim().toLowerCase(); }
+function validPassword(value) { return typeof value === "string" && value.length >= 8 && value.length <= 128; }
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const derived = await scryptAsync(password, salt, 64);
+  return salt.toString("hex") + ":" + Buffer.from(derived).toString("hex");
+}
+async function verifyPassword(password, stored) {
+  const parts = String(stored || "").split(":");
+  if (parts.length !== 2) return false;
+  const salt = Buffer.from(parts[0], "hex");
+  const expected = Buffer.from(parts[1], "hex");
+  if (!salt.length || expected.length !== 64) return false;
+  const actual = Buffer.from(await scryptAsync(password, salt, 64));
+  return crypto.timingSafeEqual(actual, expected);
+}
+function hashSession(token) { return crypto.createHash("sha256").update(token).digest("hex"); }
+async function createSession(userId) {
+  const token = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  await dbPool.query("INSERT INTO app_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)", [hashSession(token), userId, expiresAt]);
+  return { token, expiresAt };
+}
+app.post("/api/auth/signup", async (req, res) => {
+  if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE", message: "Account service is temporarily unavailable. Please try again later." });
+  const email = normalizeEmail(req.body.email);
+  const password = req.body.password;
+  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "INVALID_EMAIL", message: "Enter a valid email address." });
+  if (!validPassword(password)) return res.status(400).json({ error: "INVALID_PASSWORD", message: "Password must be 8 to 128 characters." });
+  try {
+    const passwordHash = await hashPassword(password);
+    const inserted = await dbPool.query("INSERT INTO app_users (email, password_hash) VALUES ($1, $2) RETURNING id, email", [email, passwordHash]);
+    const session = await createSession(inserted.rows[0].id);
+    res.status(201).json({ success: true, user: inserted.rows[0], token: session.token, expiresAt: session.expiresAt.toISOString() });
+  } catch (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "EMAIL_ALREADY_REGISTERED", message: "An account with this email already exists. Please log in." });
+    console.error("Signup failed:", error.message);
+    res.status(500).json({ error: "SIGNUP_FAILED", message: "Could not create account. Please try again." });
+  }
+});
+app.post("/api/auth/login", async (req, res) => {
+  if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE", message: "Account service is temporarily unavailable. Please try again later." });
+  const email = normalizeEmail(req.body.email);
+  const password = req.body.password;
+  if (!email || typeof password !== "string" || password.length > 128) return res.status(400).json({ error: "INVALID_CREDENTIALS", message: "Enter your email and password." });
+  try {
+    const found = await dbPool.query("SELECT id, email, password_hash FROM app_users WHERE email = $1", [email]);
+    if (!found.rows[0] || !(await verifyPassword(password, found.rows[0].password_hash))) return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Email or password is incorrect." });
+    const session = await createSession(found.rows[0].id);
+    res.json({ success: true, user: { id: found.rows[0].id, email: found.rows[0].email }, token: session.token, expiresAt: session.expiresAt.toISOString() });
+  } catch (error) {
+    console.error("Login failed:", error.message);
+    res.status(500).json({ error: "LOGIN_FAILED", message: "Could not log in. Please try again." });
+  }
+});
+async function requireUser(req, res, next) {
+  if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE" });
+  const auth = req.get("authorization") || "";
+  const match = auth.match(/^Bearer ([A-Za-z0-9_-]{30,})$/);
+  if (!match) return res.status(401).json({ error: "LOGIN_REQUIRED", message: "Please log in to continue." });
+  try {
+    const result = await dbPool.query("SELECT u.id, u.email FROM app_sessions s JOIN app_users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > NOW()", [hashSession(match[1])]);
+    if (!result.rows[0]) return res.status(401).json({ error: "SESSION_INVALID", message: "Your session expired. Please log in again." });
+    req.user = result.rows[0];
+    req.sessionTokenHash = hashSession(match[1]);
+    next();
+  } catch (error) { console.error("Session validation failed:", error.message); res.status(503).json({ error: "AUTH_UNAVAILABLE" }); }
+}
+app.get("/api/auth/me", requireUser, (req, res) => res.json({ user: req.user }));
+app.post("/api/auth/logout", requireUser, async (req, res) => {
+  await dbPool.query("DELETE FROM app_sessions WHERE token_hash = $1", [req.sessionTokenHash]);
+  res.json({ success: true });
+});
+
 
 app.get("/api/youtube/trending", async (req, res) => {
   if (!YOUTUBE_API_KEY) {
