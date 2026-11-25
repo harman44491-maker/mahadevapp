@@ -341,7 +341,7 @@ app.get("/api/oauth/facebook/url", requireUser, async (req, res) => {
   authUrl.search = new URLSearchParams(params);
   res.json({ url: authUrl.toString() });
 });
-app.get("/auth/youtube", requireUser, (req, res) => {
+app.get("/auth/youtube", requireUser, async (req, res) => {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     return res.status(503).json({
       error: "YOUTUBE_OAUTH_NOT_CONFIGURED",
@@ -408,7 +408,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
 
 
-app.get("/auth/facebook", requireUser, (req, res) => {
+app.get("/auth/facebook", requireUser, async (req, res) => {
   if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_OAUTH_NOT_CONFIGURED", message: "Set META_APP_ID, META_APP_SECRET and META_REDIRECT_URI in Render Environment." });
   const state = crypto.randomBytes(32).toString("hex");
   await storeOAuthState("facebook", state, req.user.id);
