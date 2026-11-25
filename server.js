@@ -21,7 +21,7 @@ const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ||
 const TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || "";
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const APP_API_KEY = process.env.APP_API_KEY || "";
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 256 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 128 * 1024 * 1024 } });
 
 const pendingOAuthStates = new Map();
 let youtubeTokens = null;
