@@ -21,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -155,7 +156,7 @@ private fun ShortsMakerScreen() {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Account Login / Signup", style = MaterialTheme.typography.titleMedium)
                     OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password (minimum 8 characters)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password (minimum 8 characters)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(enabled = !busy, onClick = { runTask {
                             val payload = JSONObject().put("email", email.trim()).put("password", password).toString()
@@ -249,7 +250,14 @@ private fun ShortsMakerScreen() {
                         "Connected channel: $channel"
                     } }, modifier = Modifier.fillMaxWidth()) { Text("Check My Channel") }
                     if (channel.isNotBlank()) Text("Channel: $channel", color = MaterialTheme.colorScheme.primary)
-                    OutlinedButton(onClick = { clearSession(context); sessionToken = ""; channel = ""; message = "Logged out." }, modifier = Modifier.fillMaxWidth()) { Text("Log Out") }
+                    OutlinedButton(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/auth/logout").header("Authorization", "Bearer $sessionToken").post("{}".toRequestBody("application/json".toMediaType())).build()
+                        withContext(Dispatchers.IO) { http.newCall(req).execute().use { } }
+                        clearSession(context)
+                        sessionToken = ""
+                        channel = ""
+                        "Logged out successfully."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Log Out") }
                 }
             }
         }
