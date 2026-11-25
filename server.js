@@ -284,7 +284,7 @@ app.get("/api/youtube/trending", async (req, res) => {
   }
 });
 
-app.get("/auth/youtube", (req, res) => {
+app.get("/auth/youtube", requireUser, (req, res) => {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     return res.status(503).json({
       error: "YOUTUBE_OAUTH_NOT_CONFIGURED",
@@ -292,7 +292,7 @@ app.get("/auth/youtube", (req, res) => {
     });
   }
   const state = crypto.randomBytes(24).toString("hex");
-  pendingOAuthStates.set(state, Date.now() + 10 * 60 * 1000);
+  pendingOAuthStates.set(state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.search = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -309,9 +309,9 @@ app.get("/auth/youtube", (req, res) => {
 app.get("/auth/youtube/callback", async (req, res) => {
   const { code, state, error } = req.query;
   if (error) return res.status(400).send("Google authorization was not completed: " + String(error));
-  const expiresAt = pendingOAuthStates.get(String(state || ""));
+  const stateRecord = pendingOAuthStates.get(String(state || ""));
   pendingOAuthStates.delete(String(state || ""));
-  if (!expiresAt || expiresAt < Date.now()) {
+  if (!stateRecord || stateRecord.expiresAt < Date.now()) {
     return res.status(400).send("Invalid or expired OAuth state. Please start again at /auth/youtube.");
   }
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -332,13 +332,14 @@ app.get("/auth/youtube/callback", async (req, res) => {
       error: "OAUTH_TOKEN_EXCHANGE_FAILED",
       message: tokens.error_description || tokens.error || "Token exchange failed"
     });
+    const existingTokens = await getUserConnection(stateRecord.userId, "youtube");
     const nextTokens = {
       access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token || youtubeTokens?.refresh_token || null,
+      refresh_token: tokens.refresh_token || existingTokens?.refresh_token || null,
       expires_at: Date.now() + (Number(tokens.expires_in || 3600) * 1000),
       scope: tokens.scope || ""
     };
-    const storage = await saveYoutubeTokens(nextTokens);
+    const storage = await saveUserConnection(stateRecord.userId, "youtube", nextTokens);
     const message = storage === "postgres_encrypted"
       ? "Your YouTube connection is saved with encrypted persistent storage."
       : "Connected, but token storage is currently memory-only. Configure DATABASE_URL and TOKEN_ENCRYPTION_KEY in Render before production use.";
@@ -351,10 +352,10 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
 
 
-app.get("/auth/facebook", (req, res) => {
+app.get("/auth/facebook", requireUser, (req, res) => {
   if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_OAUTH_NOT_CONFIGURED", message: "Set META_APP_ID, META_APP_SECRET and META_REDIRECT_URI in Render Environment." });
   const state = crypto.randomBytes(32).toString("hex");
-  pendingOAuthStates.set("facebook:" + state, Date.now() + 10 * 60 * 1000);
+  pendingOAuthStates.set("facebook:" + state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
   const authUrl = new URL("https://www.facebook.com/" + META_GRAPH_VERSION + "/dialog/oauth");
   const params = { client_id: META_APP_ID, redirect_uri: META_REDIRECT_URI, response_type: "code", scope: "pages_show_list,pages_read_engagement,pages_manage_posts", state };
   if (META_CONFIG_ID) params.config_id = META_CONFIG_ID;
@@ -365,10 +366,10 @@ app.get("/auth/facebook", (req, res) => {
 app.get("/auth/facebook/callback", async (req, res) => {
   const { code, state, error, error_description: errorDescription } = req.query;
   const stateKey = "facebook:" + String(state || "");
-  const expiresAt = pendingOAuthStates.get(stateKey);
+  const stateRecord = pendingOAuthStates.get(stateKey);
   pendingOAuthStates.delete(stateKey);
   if (error) return res.status(400).send("Facebook authorization was not completed: " + String(errorDescription || error));
-  if (!expiresAt || expiresAt < Date.now()) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
+  if (!stateRecord || stateRecord.expiresAt < Date.now()) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
   if (!code) return res.status(400).send("Missing Facebook authorization code.");
   let oauthStage = "initial_code_exchange";
   try {
@@ -416,7 +417,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
       throw err;
     }
     const pages = (accountsData.data || []).map(p => ({ id: p.id, name: p.name, access_token: p.access_token, tasks: p.tasks || [] }));
-    const storage = await saveFacebookConnection({ userToken, pages, selectedPage: null });
+    const storage = await saveUserConnection(stateRecord.userId, "facebook", { userToken, pages, selectedPage: null });
     res.send("<h2>Facebook connected</h2><p>" + pages.length + " Page(s) found. Return to Mahadev AI Shorts Maker and select the Page to publish Reels.</p><p>Token storage: " + storage + ".</p>");
   } catch (err) {
     console.error("Facebook OAuth callback failed:", JSON.stringify({
@@ -428,17 +429,19 @@ app.get("/auth/facebook/callback", async (req, res) => {
   }
 });
 
-app.get("/api/facebook/pages", requireAppKey, (_req, res) => {
-  res.json({ connected: Boolean(facebookConnection.userToken), pages: (facebookConnection.pages || []).map(p => ({ id: p.id, name: p.name, tasks: p.tasks })) });
+app.get("/api/facebook/pages", requireUser, async (req, res) => {
+  const connection = await getUserConnection(req.user.id, "facebook");
+  res.json({ connected: Boolean(connection?.userToken), pages: (connection?.pages || []).map(p => ({ id: p.id, name: p.name, tasks: p.tasks })) });
 });
 
-app.post("/api/facebook/select-page", requireAppKey, async (req, res) => {
+app.post("/api/facebook/select-page", requireUser, async (req, res) => {
+  const connection = await getUserConnection(req.user.id, "facebook");
   const pageId = String(req.body.pageId || "");
-  const page = (facebookConnection.pages || []).find(p => p.id === pageId);
+  const page = (connection?.pages || []).find(p => p.id === pageId);
   if (!page) return res.status(404).json({ error: "FACEBOOK_PAGE_NOT_FOUND" });
   if (!(page.tasks || []).some(task => ["CREATE_CONTENT", "MANAGE"].includes(task))) return res.status(403).json({ error: "FACEBOOK_PAGE_PERMISSION_MISSING", message: "The selected Page does not grant content creation or management access." });
-  const next = { ...facebookConnection, selectedPage: { id: page.id, name: page.name, access_token: page.access_token } };
-  const storage = await saveFacebookConnection(next);
+  const next = { ...connection, selectedPage: { id: page.id, name: page.name, access_token: page.access_token } };
+  const storage = await saveUserConnection(req.user.id, "facebook", next);
   res.json({ success: true, page: { id: page.id, name: page.name }, tokenStorage: storage });
 });
 
@@ -450,13 +453,14 @@ function requireAppKey(req, res, next) {
   }
   next();
 }
-async function getYoutubeClient() {
+async function getYoutubeClient(userId) {
+  const youtubeTokens = await getUserConnection(userId, "youtube");
   if (!youtubeTokens?.refresh_token) throw new Error("YOUTUBE_NOT_CONNECTED");
   const oauth = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
   oauth.setCredentials({ refresh_token: youtubeTokens.refresh_token });
   oauth.on("tokens", async refreshed => {
     try {
-      await saveYoutubeTokens({
+      await saveUserConnection(userId, "youtube", {
         ...youtubeTokens,
         access_token: refreshed.access_token || youtubeTokens.access_token,
         refresh_token: refreshed.refresh_token || youtubeTokens.refresh_token,
@@ -468,9 +472,9 @@ async function getYoutubeClient() {
   await oauth.getAccessToken();
   return google.youtube({ version: "v3", auth: oauth });
 }
-app.get("/api/youtube/channel", requireAppKey, async (_req, res) => {
+app.get("/api/youtube/channel", requireUser, async (req, res) => {
   try {
-    const youtube = await getYoutubeClient();
+    const youtube = await getYoutubeClient(req.user.id);
     const result = await youtube.channels.list({ part: ["snippet", "statistics"], mine: true });
     const channel = result.data.items?.[0];
     if (!channel) return res.status(404).json({ error: "CHANNEL_NOT_FOUND" });
@@ -480,7 +484,7 @@ app.get("/api/youtube/channel", requireAppKey, async (_req, res) => {
     res.status(e.message === "YOUTUBE_NOT_CONNECTED" ? 409 : 502).json({ error: "YOUTUBE_CHANNEL_ERROR", message: e.message });
   }
 });
-app.post("/api/youtube/upload", requireAppKey, upload.single("video"), async (req, res) => {
+app.post("/api/youtube/upload", requireUser, upload.single("video"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "VIDEO_REQUIRED", message: "Send a video file in multipart field 'video'." });
   const title = String(req.body.title || "").trim();
   const description = String(req.body.description || "").trim();
@@ -505,7 +509,7 @@ app.post("/api/youtube/upload", requireAppKey, upload.single("video"), async (re
   }
 });
 
-app.post("/api/video/process", requireAppKey, upload.single("video"), async (req, res) => {
+app.post("/api/video/process", requireUser, upload.single("video"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "VIDEO_REQUIRED" });
   if (!req.file.mimetype.startsWith("video/")) return res.status(415).json({ error: "VIDEO_TYPE_REQUIRED" });
   try {
@@ -527,10 +531,11 @@ app.post("/api/video/process", requireAppKey, upload.single("video"), async (req
   }
 });
 
-app.post("/api/facebook/reels", requireAppKey, upload.single("video"), async (req, res) => {
-  const pageId = facebookConnection.selectedPage?.id || process.env.FACEBOOK_PAGE_ID || "";
-  const pageToken = facebookConnection.selectedPage?.access_token || process.env.FACEBOOK_PAGE_ACCESS_TOKEN || "";
-  if (!pageId || !pageToken) return res.status(503).json({ error: "FACEBOOK_NOT_CONFIGURED", message: "Add FACEBOOK_PAGE_ID and FACEBOOK_PAGE_ACCESS_TOKEN in Render after granting Page publishing permissions." });
+app.post("/api/facebook/reels", requireUser, upload.single("video"), async (req, res) => {
+  const facebookConnection = await getUserConnection(req.user.id, "facebook");
+  const pageId = facebookConnection?.selectedPage?.id || "";
+  const pageToken = facebookConnection?.selectedPage?.access_token || "";
+  if (!pageId || !pageToken) return res.status(409).json({ error: "FACEBOOK_PAGE_NOT_SELECTED", message: "Connect Facebook and select a Page before publishing." });
   if (!req.file) return res.status(400).json({ error: "VIDEO_REQUIRED" });
   const title = String(req.body.title || "Mahadev AI Short").slice(0, 100);
   const description = String(req.body.description || "").slice(0, 5000);
