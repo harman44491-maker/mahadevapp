@@ -171,7 +171,7 @@ private fun ShortsMakerScreen() {
                             context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                                 ?: error("Could not read selected video")
                         }
-                        if (bytes.size > 120 * 1024 * 1024) error("Source video must be under 120 MB for this free-hosting build.")
+                        if (bytes.size > 80 * 1024 * 1024) error("Source video must be under 80 MB for this free-hosting build.")
                         val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
                             .addFormDataPart("startSeconds", "0")
                             .addFormDataPart("durationSeconds", "30")
@@ -248,7 +248,7 @@ private fun ShortsMakerScreen() {
                             context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                                 ?: error("Could not read selected video")
                         }
-                        if (bytes.size > 250 * 1024 * 1024) error("Video is larger than 250 MB. Choose a smaller file.")
+                        if (bytes.size > 120 * 1024 * 1024) error("Video is larger than 120 MB. Choose a smaller file.")
                         val videoBody = bytes.toRequestBody("application/octet-stream".toMediaType())
                         val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
                             .addFormDataPart("title", title)
