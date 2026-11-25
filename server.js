@@ -2,6 +2,9 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const { Pool } = require("pg");
+const { google } = require("googleapis");
+const multer = require("multer");
+const { Readable } = require("stream");
 
 const app = express();
 app.use(cors());
@@ -15,6 +18,8 @@ const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ||
   "https://mahadev-ai-shorts-maker-api.onrender.com/auth/youtube/callback";
 const TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || "";
 const DATABASE_URL = process.env.DATABASE_URL || "";
+const APP_API_KEY = process.env.APP_API_KEY || "";
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 256 * 1024 * 1024 } });
 
 const pendingOAuthStates = new Map();
 let youtubeTokens = null;
@@ -99,7 +104,7 @@ app.get("/", (_req, res) => {
     name: "Mahadev AI Shorts Maker API",
     status: "running",
     version: "1.2.0",
-    endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/api/status/integrations"]
+    endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/api/youtube/channel", "/api/youtube/upload", "/api/status/integrations"]
   });
 });
 
@@ -208,11 +213,71 @@ app.get("/auth/youtube/callback", async (req, res) => {
   }
 });
 
+
+function requireAppKey(req, res, next) {
+  const supplied = req.get("x-app-api-key") || "";
+  if (!APP_API_KEY || supplied.length !== APP_API_KEY.length ||
+      !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(APP_API_KEY))) {
+    return res.status(401).json({ error: "UNAUTHORIZED", message: "A valid x-app-api-key header is required." });
+  }
+  next();
+}
+async function getYoutubeClient() {
+  if (!youtubeTokens?.refresh_token) throw new Error("YOUTUBE_NOT_CONNECTED");
+  const oauth = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+  oauth.setCredentials({ refresh_token: youtubeTokens.refresh_token });
+  oauth.on("tokens", async refreshed => {
+    try {
+      await saveYoutubeTokens({
+        ...youtubeTokens,
+        access_token: refreshed.access_token || youtubeTokens.access_token,
+        refresh_token: refreshed.refresh_token || youtubeTokens.refresh_token,
+        expires_at: refreshed.expiry_date || youtubeTokens.expires_at,
+        scope: refreshed.scope || youtubeTokens.scope
+      });
+    } catch (e) { console.error("Could not persist refreshed YouTube token:", e.message); }
+  });
+  await oauth.getAccessToken();
+  return google.youtube({ version: "v3", auth: oauth });
+}
+app.get("/api/youtube/channel", requireAppKey, async (_req, res) => {
+  try {
+    const youtube = await getYoutubeClient();
+    const result = await youtube.channels.list({ part: ["snippet", "statistics"], mine: true });
+    const channel = result.data.items?.[0];
+    if (!channel) return res.status(404).json({ error: "CHANNEL_NOT_FOUND" });
+    res.json({ id: channel.id, title: channel.snippet?.title || "", thumbnail: channel.snippet?.thumbnails?.default?.url || null, subscribers: channel.statistics?.subscriberCount || "0", videos: channel.statistics?.videoCount || "0", views: channel.statistics?.viewCount || "0" });
+  } catch (e) {
+    console.error("YouTube channel lookup failed:", e.message);
+    res.status(e.message === "YOUTUBE_NOT_CONNECTED" ? 409 : 502).json({ error: "YOUTUBE_CHANNEL_ERROR", message: e.message });
+  }
+});
+app.post("/api/youtube/upload", requireAppKey, upload.single("video"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "VIDEO_REQUIRED", message: "Send a video file in multipart field 'video'." });
+  const title = String(req.body.title || "").trim();
+  const description = String(req.body.description || "").trim();
+  const privacyStatus = String(req.body.privacyStatus || "private").toLowerCase();
+  if (!title) return res.status(400).json({ error: "TITLE_REQUIRED" });
+  if (!["private", "unlisted", "public"].includes(privacyStatus)) return res.status(400).json({ error: "INVALID_PRIVACY_STATUS" });
+  try {
+    const youtube = await getYoutubeClient();
+    const result = await youtube.videos.insert({
+      part: ["snippet", "status"],
+      requestBody: { snippet: { title: title.slice(0, 100), description: description.slice(0, 5000), categoryId: "22" }, status: { privacyStatus, selfDeclaredMadeForKids: false } },
+      media: { body: Readable.from(req.file.buffer) }
+    });
+    res.status(201).json({ success: true, id: result.data.id, title: result.data.snippet?.title || title, privacyStatus: result.data.status?.privacyStatus || privacyStatus, url: result.data.id ? "https://www.youtube.com/watch?v=" + result.data.id : null });
+  } catch (e) {
+    console.error("YouTube upload failed:", e.message);
+    res.status(502).json({ error: "YOUTUBE_UPLOAD_FAILED", message: e.message });
+  }
+});
 app.get("/api/status/integrations", (_req, res) => {
   res.json({
     youtubeTrending: Boolean(YOUTUBE_API_KEY),
     youtubeOAuthConfigured: Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
     youtubeConnected: Boolean(youtubeTokens?.refresh_token || youtubeTokens?.access_token),
+    youtubeUploadConfigured: Boolean(APP_API_KEY),
     youtubeTokenStorage: dbReady ? "postgres_encrypted" : "memory_only_database_not_configured",
     facebookPublishing: "meta_oauth_not_configured",
     clipProcessing: "worker_not_configured"
