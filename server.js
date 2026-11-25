@@ -29,7 +29,7 @@ const DATABASE_URL = process.env.DATABASE_URL || "";
 const APP_API_KEY = process.env.APP_API_KEY || "";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 128 * 1024 * 1024 } });
 
-const pendingOAuthStates = new Map();
+
 let youtubeTokens = null;
 let facebookConnection = { userToken: null, pages: [], selectedPage: null };
 let dbReady = false;
@@ -87,6 +87,15 @@ async function initializeTokenStore() {
     CREATE TABLE IF NOT EXISTS app_sessions (
       token_hash TEXT PRIMARY KEY,
       user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state_hash TEXT PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL CHECK (provider IN ('youtube', 'facebook')),
       expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -241,6 +250,15 @@ async function requireUser(req, res, next) {
     next();
   } catch (error) { console.error("Session validation failed:", error.message); res.status(503).json({ error: "AUTH_UNAVAILABLE" }); }
 }
+async function storeOAuthState(provider, state, userId) {
+  const stateHash = hashSession(state);
+  await dbPool.query("INSERT INTO oauth_states (state_hash, user_id, provider, expires_at) VALUES ($1, $2, $3, NOW() + INTERVAL '10 minutes')", [stateHash, userId, provider]);
+}
+async function consumeOAuthState(provider, state) {
+  const stateHash = hashSession(String(state || ""));
+  const result = await dbPool.query("DELETE FROM oauth_states WHERE state_hash = $1 AND provider = $2 AND expires_at > NOW() RETURNING user_id", [stateHash, provider]);
+  return result.rows[0] ? { userId: result.rows[0].user_id, expiresAt: Date.now() + 1 } : null;
+}
 app.get("/api/auth/me", requireUser, (req, res) => res.json({ user: req.user }));
 app.post("/api/auth/logout", requireUser, async (req, res) => {
   await dbPool.query("DELETE FROM app_sessions WHERE token_hash = $1", [req.sessionTokenHash]);
@@ -284,10 +302,10 @@ app.get("/api/youtube/trending", async (req, res) => {
   }
 });
 
-app.get("/api/oauth/youtube/url", requireUser, (req, res) => {
+app.get("/api/oauth/youtube/url", requireUser, async (req, res) => {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return res.status(503).json({ error: "YOUTUBE_OAUTH_NOT_CONFIGURED" });
   const state = crypto.randomBytes(24).toString("hex");
-  pendingOAuthStates.set(state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
+  await storeOAuthState("youtube", state, req.user.id);
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.search = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID, redirect_uri: GOOGLE_REDIRECT_URI, response_type: "code",
@@ -296,10 +314,10 @@ app.get("/api/oauth/youtube/url", requireUser, (req, res) => {
   });
   res.json({ url: authUrl.toString() });
 });
-app.get("/api/oauth/facebook/url", requireUser, (req, res) => {
+app.get("/api/oauth/facebook/url", requireUser, async (req, res) => {
   if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_OAUTH_NOT_CONFIGURED" });
   const state = crypto.randomBytes(32).toString("hex");
-  pendingOAuthStates.set("facebook:" + state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
+  await storeOAuthState("facebook", state, req.user.id);
   const authUrl = new URL("https://www.facebook.com/" + META_GRAPH_VERSION + "/dialog/oauth");
   const params = { client_id: META_APP_ID, redirect_uri: META_REDIRECT_URI, response_type: "code", scope: "pages_show_list,pages_read_engagement,pages_manage_posts", state };
   if (META_CONFIG_ID) params.config_id = META_CONFIG_ID;
@@ -314,7 +332,7 @@ app.get("/auth/youtube", requireUser, (req, res) => {
     });
   }
   const state = crypto.randomBytes(24).toString("hex");
-  pendingOAuthStates.set(state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
+  await storeOAuthState("youtube", state, req.user.id);
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.search = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -331,8 +349,7 @@ app.get("/auth/youtube", requireUser, (req, res) => {
 app.get("/auth/youtube/callback", async (req, res) => {
   const { code, state, error } = req.query;
   if (error) return res.status(400).send("Google authorization was not completed: " + String(error));
-  const stateRecord = pendingOAuthStates.get(String(state || ""));
-  pendingOAuthStates.delete(String(state || ""));
+  const stateRecord = await consumeOAuthState("youtube", state);
   if (!stateRecord || stateRecord.expiresAt < Date.now()) {
     return res.status(400).send("Invalid or expired OAuth state. Please start again at /auth/youtube.");
   }
@@ -377,7 +394,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
 app.get("/auth/facebook", requireUser, (req, res) => {
   if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_OAUTH_NOT_CONFIGURED", message: "Set META_APP_ID, META_APP_SECRET and META_REDIRECT_URI in Render Environment." });
   const state = crypto.randomBytes(32).toString("hex");
-  pendingOAuthStates.set("facebook:" + state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
+  await storeOAuthState("facebook", state, req.user.id);
   const authUrl = new URL("https://www.facebook.com/" + META_GRAPH_VERSION + "/dialog/oauth");
   const params = { client_id: META_APP_ID, redirect_uri: META_REDIRECT_URI, response_type: "code", scope: "pages_show_list,pages_read_engagement,pages_manage_posts", state };
   if (META_CONFIG_ID) params.config_id = META_CONFIG_ID;
@@ -387,9 +404,7 @@ app.get("/auth/facebook", requireUser, (req, res) => {
 
 app.get("/auth/facebook/callback", async (req, res) => {
   const { code, state, error, error_description: errorDescription } = req.query;
-  const stateKey = "facebook:" + String(state || "");
-  const stateRecord = pendingOAuthStates.get(stateKey);
-  pendingOAuthStates.delete(stateKey);
+  const stateRecord = await consumeOAuthState("facebook", state);
   if (error) return res.status(400).send("Facebook authorization was not completed: " + String(errorDescription || error));
   if (!stateRecord || stateRecord.expiresAt < Date.now()) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
   if (!code) return res.status(400).send("Missing Facebook authorization code.");
