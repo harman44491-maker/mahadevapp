@@ -274,7 +274,7 @@ async function storeOAuthState(provider, state, userId) {
 async function consumeOAuthState(provider, state) {
   const stateHash = hashSession(String(state || ""));
   const result = await dbPool.query("DELETE FROM oauth_states WHERE state_hash = $1 AND provider = $2 AND expires_at > NOW() RETURNING user_id", [stateHash, provider]);
-  return result.rows[0] ? { userId: result.rows[0].user_id, expiresAt: Date.now() + 1 } : null;
+  return result.rows[0] ? { userId: result.rows[0].user_id } : null;
 }
 app.get("/api/auth/me", requireUser, (req, res) => res.json({ user: req.user }));
 app.post("/api/auth/logout", requireUser, async (req, res) => {
@@ -369,7 +369,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
   let stateRecord;
   try { stateRecord = await consumeOAuthState("youtube", state); }
   catch (err) { console.error("Google OAuth state lookup failed:", err.message); return res.status(503).send("Secure OAuth state storage is temporarily unavailable. Please try again."); }
-  if (!stateRecord || stateRecord.expiresAt < Date.now()) {
+  if (!stateRecord) {
     return res.status(400).send("Invalid or expired OAuth state. Please start again at /auth/youtube.");
   }
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -427,7 +427,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
   try { stateRecord = await consumeOAuthState("facebook", state); }
   catch (err) { console.error("Facebook OAuth state lookup failed:", err.message); return res.status(503).send("Secure OAuth state storage is temporarily unavailable. Please try again."); }
   if (error) return res.status(400).send("Facebook authorization was not completed: " + String(errorDescription || error));
-  if (!stateRecord || stateRecord.expiresAt < Date.now()) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
+  if (!stateRecord) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
   if (!code) return res.status(400).send("Missing Facebook authorization code.");
   let oauthStage = "initial_code_exchange";
   try {
