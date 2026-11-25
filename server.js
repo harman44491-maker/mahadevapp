@@ -253,29 +253,61 @@ app.get("/auth/facebook/callback", async (req, res) => {
   if (error) return res.status(400).send("Facebook authorization was not completed: " + String(errorDescription || error));
   if (!expiresAt || expiresAt < Date.now()) return res.status(400).send("Invalid or expired Facebook OAuth state. Start again at /auth/facebook.");
   if (!code) return res.status(400).send("Missing Facebook authorization code.");
+  let oauthStage = "initial_code_exchange";
   try {
     const tokenUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/oauth/access_token");
     tokenUrl.search = new URLSearchParams({ client_id: META_APP_ID, client_secret: META_APP_SECRET, redirect_uri: META_REDIRECT_URI, code: String(code) });
     const tokenResponse = await fetch(tokenUrl);
     const tokenData = await tokenResponse.json();
-    if (!tokenResponse.ok || !tokenData.access_token) throw new Error(tokenData.error?.message || "Facebook token exchange failed.");
+    if (!tokenResponse.ok || !tokenData.access_token) {
+      const metaError = tokenData.error || {};
+      const detail = [metaError.message || "Facebook token exchange failed.", metaError.code ? "Meta code " + metaError.code : "", metaError.type ? "type " + metaError.type : ""].filter(Boolean).join(" | ");
+      const err = new Error(detail);
+      err.metaCode = metaError.code || null;
+      err.metaType = metaError.type || null;
+      err.fbtraceId = metaError.fbtrace_id || null;
+      err.httpStatus = tokenResponse.status;
+      throw err;
+    }
     let userToken = tokenData.access_token;
+    oauthStage = "long_lived_token_exchange";
     const exchangeUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/oauth/access_token");
     exchangeUrl.search = new URLSearchParams({ grant_type: "fb_exchange_token", client_id: META_APP_ID, client_secret: META_APP_SECRET, fb_exchange_token: userToken });
     const exchangeResponse = await fetch(exchangeUrl);
     const exchangeData = await exchangeResponse.json();
     if (exchangeResponse.ok && exchangeData.access_token) userToken = exchangeData.access_token;
+    else if (!exchangeResponse.ok) {
+      const metaError = exchangeData.error || {};
+      console.error("Facebook long-lived token exchange rejected:", JSON.stringify({
+        httpStatus: exchangeResponse.status, metaCode: metaError.code || null,
+        metaType: metaError.type || null, fbtraceId: metaError.fbtrace_id || null,
+        message: metaError.message || "No Meta error message"
+      }));
+    }
+    oauthStage = "page_list_lookup";
     const accountsUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/me/accounts");
     accountsUrl.search = new URLSearchParams({ fields: "id,name,access_token,tasks", access_token: userToken });
     const accountsResponse = await fetch(accountsUrl);
     const accountsData = await accountsResponse.json();
-    if (!accountsResponse.ok) throw new Error(accountsData.error?.message || "Could not retrieve Facebook Pages.");
+    if (!accountsResponse.ok) {
+      const metaError = accountsData.error || {};
+      const err = new Error(metaError.message || "Could not retrieve Facebook Pages.");
+      err.metaCode = metaError.code || null;
+      err.metaType = metaError.type || null;
+      err.fbtraceId = metaError.fbtrace_id || null;
+      err.httpStatus = accountsResponse.status;
+      throw err;
+    }
     const pages = (accountsData.data || []).map(p => ({ id: p.id, name: p.name, access_token: p.access_token, tasks: p.tasks || [] }));
     const storage = await saveFacebookConnection({ userToken, pages, selectedPage: null });
     res.send("<h2>Facebook connected</h2><p>" + pages.length + " Page(s) found. Return to Mahadev AI Shorts Maker and select the Page to publish Reels.</p><p>Token storage: " + storage + ".</p>");
   } catch (err) {
-    console.error("Facebook OAuth callback failed:", err.message);
-    res.status(502).send("Facebook connection failed. Check Meta permissions, redirect URI and Render settings.");
+    console.error("Facebook OAuth callback failed:", JSON.stringify({
+      stage: oauthStage, message: err.message, httpStatus: err.httpStatus || null,
+      metaCode: err.metaCode || null, metaType: err.metaType || null,
+      fbtraceId: err.fbtraceId || null
+    }));
+    res.status(502).send("Facebook connection failed during " + oauthStage + ". Check Render logs for the Meta error code; no credentials are logged.");
   }
 });
 
