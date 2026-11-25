@@ -8,6 +8,8 @@ import android.content.ContentValues
 import android.provider.MediaStore
 import java.io.File
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -32,6 +35,60 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONArray
 import java.util.concurrent.TimeUnit
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+private const val SESSION_PREFS = "mahadev_secure_session"
+private const val SESSION_KEY_ALIAS = "mahadev_session_aes_key"
+
+private fun sessionKey(): SecretKey {
+    val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    val existing = store.getKey(SESSION_KEY_ALIAS, null) as? SecretKey
+    if (existing != null) return existing
+    val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+    generator.init(KeyGenParameterSpec.Builder(
+        SESSION_KEY_ALIAS,
+        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+    ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+        .setRandomizedEncryptionRequired(true)
+        .build())
+    return generator.generateKey()
+}
+
+private fun saveSession(context: android.content.Context, token: String) {
+    if (token.isBlank()) return
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.ENCRYPT_MODE, sessionKey())
+    val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
+    val packed = cipher.iv + encrypted
+    val encoded = Base64.encodeToString(packed, Base64.NO_WRAP)
+    context.getSharedPreferences(SESSION_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit().putString("token", encoded).apply()
+}
+
+private fun loadSession(context: android.content.Context): String {
+    return try {
+        val encoded = context.getSharedPreferences(SESSION_PREFS, android.content.Context.MODE_PRIVATE)
+            .getString("token", null) ?: return ""
+        val packed = Base64.decode(encoded, Base64.NO_WRAP)
+        if (packed.size <= 12) return ""
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, sessionKey(), GCMParameterSpec(128, packed.copyOfRange(0, 12)))
+        String(cipher.doFinal(packed.copyOfRange(12, packed.size)), Charsets.UTF_8)
+    } catch (_: Exception) { "" }
+}
+
+private fun clearSession(context: android.content.Context) {
+    context.getSharedPreferences(SESSION_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit().remove("token").apply()
+}
 
 private const val API_BASE = "https://mahadev-ai-shorts-maker-api.onrender.com"
 private val http = OkHttpClient.Builder()
@@ -51,17 +108,20 @@ class MainActivity : ComponentActivity() {
 private fun ShortsMakerScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var apiKey by remember { mutableStateOf("") }
+    var sessionToken by remember { mutableStateOf(loadSession(context)) }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var privacy by remember { mutableStateOf("private") }
     var publishAt by remember { mutableStateOf("") }
     var selectedVideo by remember { mutableStateOf<Uri?>(null) }
     var selectedName by remember { mutableStateOf("No video selected") }
-    var message by remember { mutableStateOf("Ready. Enter your app access key to use channel and upload tools.") }
+    var message by remember { mutableStateOf("Log in or create an account to get started.") }
     var busy by remember { mutableStateOf(false) }
     var trending by remember { mutableStateOf(listOf<Triple<String, String, String>>()) }
     var channel by remember { mutableStateOf("") }
+    var facebookPages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -85,6 +145,71 @@ private fun ShortsMakerScreen() {
         }
     }
 
+    // Refresh account connections when returning from the external OAuth browser.
+    val activity = context as? ComponentActivity
+    DisposableEffect(activity, sessionToken) {
+        if (activity == null || sessionToken.isBlank()) {
+            onDispose { }
+        } else {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    scope.launch {
+                        try {
+                            val statusRequest = Request.Builder()
+                                .url("$API_BASE/api/status/integrations")
+                                .header("Authorization", "Bearer $sessionToken")
+                                .get().build()
+                            val statusBody = withContext(Dispatchers.IO) {
+                                http.newCall(statusRequest).execute().use { response ->
+                                    val bodyText = response.body?.string().orEmpty()
+                                    if (!response.isSuccessful) error("Connection status unavailable")
+                                    bodyText
+                                }
+                            }
+                            val status = JSONObject(statusBody)
+                            if (status.optBoolean("youtubeConnected")) {
+                                val request = Request.Builder()
+                                    .url("$API_BASE/api/youtube/channel")
+                                    .header("Authorization", "Bearer $sessionToken")
+                                    .get().build()
+                                val bodyText = withContext(Dispatchers.IO) {
+                                    http.newCall(request).execute().use { response ->
+                                        val text = response.body?.string().orEmpty()
+                                        if (!response.isSuccessful) error("YouTube channel refresh failed")
+                                        text
+                                    }
+                                }
+                                channel = JSONObject(bodyText).optString("title")
+                            }
+                            if (status.optBoolean("facebookConnected")) {
+                                val request = Request.Builder()
+                                    .url("$API_BASE/api/facebook/pages")
+                                    .header("Authorization", "Bearer $sessionToken")
+                                    .get().build()
+                                val bodyText = withContext(Dispatchers.IO) {
+                                    http.newCall(request).execute().use { response ->
+                                        val text = response.body?.string().orEmpty()
+                                        if (!response.isSuccessful) error("Facebook Page refresh failed")
+                                        text
+                                    }
+                                }
+                                val pages = JSONObject(bodyText).optJSONArray("pages") ?: JSONArray()
+                                facebookPages = (0 until pages.length()).map { index ->
+                                    val page = pages.getJSONObject(index)
+                                    page.optString("id") to page.optString("name")
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Keep manual refresh buttons available if a background refresh fails.
+                        }
+                    }
+                }
+            }
+            activity.lifecycle.addObserver(observer)
+            onDispose { activity.lifecycle.removeObserver(observer) }
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -93,36 +218,115 @@ private fun ShortsMakerScreen() {
         Text("AI Shorts Maker", style = MaterialTheme.typography.headlineMedium)
         Text("YouTube tools • Hindi workflow", style = MaterialTheme.typography.bodyMedium)
 
-        Card {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("1. YouTube Account", style = MaterialTheme.typography.titleMedium)
-                Text("Connect your own channel. Google sign-in opens in your browser.")
-                Button(onClick = {
-                    runCatching {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$API_BASE/auth/youtube")))
-                    }.onFailure { message = "Could not open Google sign-in: ${it.message}" }
-                }, modifier = Modifier.fillMaxWidth()) { Text("Connect YouTube with Google") }
-                OutlinedTextField(
-                    value = apiKey, onValueChange = { apiKey = it },
-                    label = { Text("App access key") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Button(
-                    enabled = apiKey.isNotBlank() && !busy,
-                    onClick = { runTask {
-                        val req = Request.Builder().url("$API_BASE/api/youtube/channel")
-                            .header("x-app-api-key", apiKey).get().build()
+        if (sessionToken.isBlank()) {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Account Login / Signup", style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password (minimum 8 characters)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(enabled = !busy, onClick = { runTask {
+                            val payload = JSONObject().put("email", email.trim()).put("password", password).toString()
+                            val req = Request.Builder().url("$API_BASE/api/auth/login").post(payload.toRequestBody("application/json".toMediaType())).build()
+                            val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                                val text = r.body?.string().orEmpty()
+                                if (!r.isSuccessful) error(JSONObject(text).optString("message", "Login failed (${r.code})"))
+                                text
+                            } }
+                            sessionToken = JSONObject(body).optString("token")
+                            saveSession(context, sessionToken)
+                            "Login successful. Your account is ready."
+                        } }, modifier = Modifier.weight(1f)) { Text("Log In") }
+                        OutlinedButton(enabled = !busy, onClick = { runTask {
+                            val payload = JSONObject().put("email", email.trim()).put("password", password).toString()
+                            val req = Request.Builder().url("$API_BASE/api/auth/signup").post(payload.toRequestBody("application/json".toMediaType())).build()
+                            val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                                val text = r.body?.string().orEmpty()
+                                if (!r.isSuccessful) error(JSONObject(text).optString("message", "Signup failed (${r.code})"))
+                                text
+                            } }
+                            sessionToken = JSONObject(body).optString("token")
+                            saveSession(context, sessionToken)
+                            "Account created successfully."
+                        } }, modifier = Modifier.weight(1f)) { Text("Create Account") }
+                    }
+                }
+            }
+        } else {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("1. Your Connected Accounts", style = MaterialTheme.typography.titleMedium)
+                    Text("Your YouTube and Facebook connections are saved separately to your account.")
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/oauth/youtube/url").header("Authorization", "Bearer $sessionToken").get().build()
                         val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
                             val text = r.body?.string().orEmpty()
-                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Channel request failed (${r.code})"))
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Google sign-in could not start"))
                             text
                         } }
-                        val j = JSONObject(body)
-                        channel = j.optString("title")
+                        val url = JSONObject(body).optString("url")
+                        withContext(Dispatchers.Main) { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                        "Google sign-in opened. Complete it in your browser, then return to the app."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Connect YouTube with Google") }
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/oauth/facebook/url").header("Authorization", "Bearer $sessionToken").get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Facebook sign-in could not start"))
+                            text
+                        } }
+                        val url = JSONObject(body).optString("url")
+                        withContext(Dispatchers.Main) { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                        "Facebook sign-in opened. Complete it in your browser, then return to the app."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Connect Facebook Page") }
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/facebook/pages").header("Authorization", "Bearer $sessionToken").get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Could not load Facebook Pages"))
+                            text
+                        } }
+                        val arr = JSONObject(body).optJSONArray("pages") ?: JSONArray()
+                        facebookPages = (0 until arr.length()).map { i ->
+                            val page = arr.getJSONObject(i)
+                            page.optString("id") to page.optString("name")
+                        }
+                        if (facebookPages.isEmpty()) "No Facebook Pages found for this account."
+                        else "Found ${facebookPages.size} Facebook Page(s). Select one below."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Load My Facebook Pages") }
+                    facebookPages.forEach { page ->
+                        OutlinedButton(enabled = !busy, onClick = { runTask {
+                            val payload = JSONObject().put("pageId", page.first).toString()
+                            val req = Request.Builder().url("$API_BASE/api/facebook/select-page")
+                                .header("Authorization", "Bearer $sessionToken")
+                                .post(payload.toRequestBody("application/json".toMediaType())).build()
+                            withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                                val text = r.body?.string().orEmpty()
+                                if (!r.isSuccessful) error(JSONObject(text).optString("message", "Page selection failed"))
+                            } }
+                            "Facebook Page selected: ${page.second}"
+                        } }, modifier = Modifier.fillMaxWidth()) { Text("Select Page: ${page.second}") }
+                    }
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/youtube/channel").header("Authorization", "Bearer $sessionToken").get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Channel request failed"))
+                            text
+                        } }
+                        channel = JSONObject(body).optString("title")
                         "Connected channel: $channel"
-                    } }, modifier = Modifier.fillMaxWidth()
-                ) { Text("Check My Channel") }
-                if (channel.isNotBlank()) Text("Channel: $channel", color = MaterialTheme.colorScheme.primary)
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Check My Channel") }
+                    if (channel.isNotBlank()) Text("Channel: $channel", color = MaterialTheme.colorScheme.primary)
+                    OutlinedButton(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/auth/logout").header("Authorization", "Bearer $sessionToken").post("{}".toRequestBody("application/json".toMediaType())).build()
+                        withContext(Dispatchers.IO) { http.newCall(req).execute().use { } }
+                        clearSession(context)
+                        sessionToken = ""
+                        channel = ""
+                        "Logged out successfully."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Log Out") }
+                }
             }
         }
 
@@ -164,7 +368,7 @@ private fun ShortsMakerScreen() {
                 }
                 Text(selectedName, style = MaterialTheme.typography.bodySmall)
                 Button(
-                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null,
+                    enabled = !busy && sessionToken.isNotBlank() && selectedVideo != null,
                     onClick = { runTask {
                         val uri = selectedVideo ?: error("Choose a source video first")
                         val bytes = withContext(Dispatchers.IO) {
@@ -178,7 +382,7 @@ private fun ShortsMakerScreen() {
                             .addFormDataPart("video", selectedName, bytes.toRequestBody("video/mp4".toMediaType()))
                             .build()
                         val req = Request.Builder().url("$API_BASE/api/video/process")
-                            .header("x-app-api-key", apiKey).post(multipart).build()
+                            .header("Authorization", "Bearer $sessionToken").post(multipart).build()
                         val processed = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
                             if (!r.isSuccessful) {
                                 val errorText = r.body?.string().orEmpty()
@@ -242,7 +446,7 @@ private fun ShortsMakerScreen() {
                 )
                 if (publishAt.isNotBlank()) Text("YouTube scheduled uploads are sent as Private until the scheduled publish time.")
                 Button(
-                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null && title.isNotBlank(),
+                    enabled = !busy && sessionToken.isNotBlank() && selectedVideo != null && title.isNotBlank(),
                     onClick = { runTask {
                         val uri = selectedVideo ?: error("Choose a video first")
                         val bytes = withContext(Dispatchers.IO) {
@@ -259,7 +463,7 @@ private fun ShortsMakerScreen() {
                             .addFormDataPart("video", selectedName, videoBody)
                             .build()
                         val req = Request.Builder().url("$API_BASE/api/youtube/upload")
-                            .header("x-app-api-key", apiKey).post(multipart).build()
+                            .header("Authorization", "Bearer $sessionToken").post(multipart).build()
                         val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
                             val text = r.body?.string().orEmpty()
                             if (!r.isSuccessful) error(JSONObject(text).optString("message", "Upload failed (${r.code})"))
@@ -270,7 +474,7 @@ private fun ShortsMakerScreen() {
                     } }, modifier = Modifier.fillMaxWidth()
                 ) { Text("Upload to YouTube") }
                 Button(
-                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null,
+                    enabled = !busy && sessionToken.isNotBlank() && selectedVideo != null,
                     onClick = { runTask {
                         val uri = selectedVideo ?: error("Choose a video first")
                         val bytes = withContext(Dispatchers.IO) {
@@ -285,7 +489,7 @@ private fun ShortsMakerScreen() {
                             .addFormDataPart("video", selectedName, bytes.toRequestBody("video/mp4".toMediaType()))
                             .build()
                         val req = Request.Builder().url("$API_BASE/api/facebook/reels")
-                            .header("x-app-api-key", apiKey).post(multipart).build()
+                            .header("Authorization", "Bearer $sessionToken").post(multipart).build()
                         val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
                             val text = r.body?.string().orEmpty()
                             if (!r.isSuccessful) {
