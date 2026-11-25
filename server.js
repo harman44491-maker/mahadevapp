@@ -284,6 +284,28 @@ app.get("/api/youtube/trending", async (req, res) => {
   }
 });
 
+app.get("/api/oauth/youtube/url", requireUser, (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return res.status(503).json({ error: "YOUTUBE_OAUTH_NOT_CONFIGURED" });
+  const state = crypto.randomBytes(24).toString("hex");
+  pendingOAuthStates.set(state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
+  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authUrl.search = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID, redirect_uri: GOOGLE_REDIRECT_URI, response_type: "code",
+    scope: "openid email https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.upload",
+    access_type: "offline", prompt: "consent", state
+  });
+  res.json({ url: authUrl.toString() });
+});
+app.get("/api/oauth/facebook/url", requireUser, (req, res) => {
+  if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_OAUTH_NOT_CONFIGURED" });
+  const state = crypto.randomBytes(32).toString("hex");
+  pendingOAuthStates.set("facebook:" + state, { expiresAt: Date.now() + 10 * 60 * 1000, userId: req.user.id });
+  const authUrl = new URL("https://www.facebook.com/" + META_GRAPH_VERSION + "/dialog/oauth");
+  const params = { client_id: META_APP_ID, redirect_uri: META_REDIRECT_URI, response_type: "code", scope: "pages_show_list,pages_read_engagement,pages_manage_posts", state };
+  if (META_CONFIG_ID) params.config_id = META_CONFIG_ID;
+  authUrl.search = new URLSearchParams(params);
+  res.json({ url: authUrl.toString() });
+});
 app.get("/auth/youtube", requireUser, (req, res) => {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     return res.status(503).json({
