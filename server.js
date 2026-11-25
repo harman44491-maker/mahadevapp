@@ -496,7 +496,7 @@ app.post("/api/youtube/upload", requireUser, upload.single("video"), async (req,
   if (!title) return res.status(400).json({ error: "TITLE_REQUIRED" });
   if (!["private", "unlisted", "public"].includes(privacyStatus)) return res.status(400).json({ error: "INVALID_PRIVACY_STATUS" });
   try {
-    const youtube = await getYoutubeClient();
+    const youtube = await getYoutubeClient(req.user.id);
     const result = await youtube.videos.insert({
       part: ["snippet", "status"],
       requestBody: { snippet: { title: title.slice(0, 100), description: description.slice(0, 5000), categoryId: "22" }, status: { privacyStatus, selfDeclaredMadeForKids: false, ...(publishAt ? { publishAt: publishAt.toISOString() } : {}) } },
@@ -580,22 +580,23 @@ app.post("/api/facebook/reels", requireUser, upload.single("video"), async (req,
   }
 });
 
-app.get("/api/status/integrations", (_req, res) => {
+app.get("/api/status/integrations", requireUser, async (req, res) => {
+  const youtubeTokens = await getUserConnection(req.user.id, "youtube");
+  const facebookConnection = await getUserConnection(req.user.id, "facebook");
   res.json({
     youtubeTrending: Boolean(YOUTUBE_API_KEY),
     youtubeOAuthConfigured: Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET),
     youtubeConnected: Boolean(youtubeTokens?.refresh_token || youtubeTokens?.access_token),
-    youtubeUploadConfigured: Boolean(APP_API_KEY),
-    youtubeTokenStorage: dbReady ? "postgres_encrypted" : "memory_only_database_not_configured",
+    youtubeTokenStorage: youtubeTokens ? "postgres_encrypted" : "not_connected",
     facebookOAuthConfigured: Boolean(META_APP_ID && META_APP_SECRET),
-    facebookConnected: Boolean(facebookConnection.userToken),
-    facebookPageSelected: Boolean(facebookConnection.selectedPage?.id || (process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN)),
-    facebookTokenStorage: dbReady && facebookConnection.userToken ? "postgres_encrypted" : "memory_only_or_not_connected",
-    facebookPublishing: Boolean((facebookConnection.selectedPage?.id && facebookConnection.selectedPage?.access_token) || (process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN)),
+    facebookConnected: Boolean(facebookConnection?.userToken),
+    facebookPageSelected: Boolean(facebookConnection?.selectedPage?.id),
+    facebookTokenStorage: facebookConnection ? "postgres_encrypted" : "not_connected",
+    facebookPublishing: Boolean(facebookConnection?.selectedPage?.id && facebookConnection?.selectedPage?.access_token),
     hindiSpeechToText: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
-    clipProcessing: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+    clipProcessing: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
     scheduledYouTubePublishing: Boolean(youtubeTokens?.refresh_token),
-    scheduledFacebookPublishing: Boolean((facebookConnection.selectedPage?.id && facebookConnection.selectedPage?.access_token) || (process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN))
+    scheduledFacebookPublishing: Boolean(facebookConnection?.selectedPage?.id && facebookConnection?.selectedPage?.access_token)
   });
 });
 
