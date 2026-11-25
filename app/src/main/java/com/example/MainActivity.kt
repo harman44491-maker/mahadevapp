@@ -369,7 +369,7 @@ private fun ShortsMakerScreen() {
                     } }, modifier = Modifier.fillMaxWidth()
                 ) { Text("Upload to YouTube") }
                 Button(
-                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null,
+                    enabled = !busy && sessionToken.isNotBlank() && selectedVideo != null,
                     onClick = { runTask {
                         val uri = selectedVideo ?: error("Choose a video first")
                         val bytes = withContext(Dispatchers.IO) {
@@ -384,7 +384,7 @@ private fun ShortsMakerScreen() {
                             .addFormDataPart("video", selectedName, bytes.toRequestBody("video/mp4".toMediaType()))
                             .build()
                         val req = Request.Builder().url("$API_BASE/api/facebook/reels")
-                            .header("x-app-api-key", apiKey).post(multipart).build()
+                            .header("Authorization", "Bearer $sessionToken").post(multipart).build()
                         val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
                             val text = r.body?.string().orEmpty()
                             if (!r.isSuccessful) {
