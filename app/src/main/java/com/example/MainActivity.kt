@@ -55,6 +55,7 @@ private fun ShortsMakerScreen() {
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var privacy by remember { mutableStateOf("private") }
+    var publishAt by remember { mutableStateOf("") }
     var selectedVideo by remember { mutableStateOf<Uri?>(null) }
     var selectedName by remember { mutableStateOf("No video selected") }
     var message by remember { mutableStateOf("Ready. Enter your app access key to use channel and upload tools.") }
@@ -228,6 +229,12 @@ private fun ShortsMakerScreen() {
                         FilterChip(selected = privacy == value, onClick = { privacy = value }, label = { Text(value.replaceFirstChar { it.uppercase() }) })
                     }
                 }
+                OutlinedTextField(
+                    value = publishAt, onValueChange = { publishAt = it },
+                    label = { Text("Schedule (optional ISO date/time)") },
+                    placeholder = { Text("2026-11-26T18:30:00+05:30") },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Button(
                     enabled = !busy && apiKey.isNotBlank() && selectedVideo != null && title.isNotBlank(),
                     onClick = { runTask {
@@ -241,7 +248,8 @@ private fun ShortsMakerScreen() {
                         val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
                             .addFormDataPart("title", title)
                             .addFormDataPart("description", description)
-                            .addFormDataPart("privacyStatus", privacy)
+                             .addFormDataPart("privacyStatus", privacy)
+                            .apply { if (publishAt.isNotBlank()) addFormDataPart("publishAt", publishAt.trim()) }
                             .addFormDataPart("video", selectedName, videoBody)
                             .build()
                         val req = Request.Builder().url("$API_BASE/api/youtube/upload")
@@ -255,6 +263,36 @@ private fun ShortsMakerScreen() {
                         "Upload successful: ${j.optString("url")}"
                     } }, modifier = Modifier.fillMaxWidth()
                 ) { Text("Upload to YouTube") }
+                Button(
+                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null,
+                    onClick = { runTask {
+                        val uri = selectedVideo ?: error("Choose a video first")
+                        val bytes = withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                ?: error("Could not read selected video")
+                        }
+                        if (bytes.size > 120 * 1024 * 1024) error("Video must be under 120 MB.")
+                        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+                            .addFormDataPart("title", title.ifBlank { "Mahadev AI Short" })
+                            .addFormDataPart("description", description)
+                            .apply { if (publishAt.isNotBlank()) addFormDataPart("publishAt", publishAt.trim()) }
+                            .addFormDataPart("video", selectedName, bytes.toRequestBody("video/mp4".toMediaType()))
+                            .build()
+                        val req = Request.Builder().url("$API_BASE/api/facebook/reels")
+                            .header("x-app-api-key", apiKey).post(multipart).build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) {
+                                val detail = runCatching { JSONObject(text).optString("message") }.getOrNull()
+                                error(detail?.takeIf { it.isNotBlank() } ?: "Facebook publishing failed (" + r.code + ")")
+                            }
+                            text
+                        } }
+                        val j = JSONObject(body)
+                        if (publishAt.isBlank()) "Facebook Reel publish request submitted. Video ID: " + j.optString("videoId")
+                        else "Facebook Reel scheduled. Video ID: " + j.optString("videoId")
+                    } }, modifier = Modifier.fillMaxWidth()
+                ) { Text(if (publishAt.isBlank()) "Publish Facebook Reel" else "Schedule Facebook Reel") }
             }
         }
 
