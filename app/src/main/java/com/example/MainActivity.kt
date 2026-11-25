@@ -1,49 +1,207 @@
 package com.example
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ui.FieldCollectViewModel
-import com.example.ui.screens.MainScreen
-import com.example.ui.theme.MyApplicationTheme
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import org.json.JSONArray
+import java.util.concurrent.TimeUnit
+
+private const val API_BASE = "https://mahadev-ai-shorts-maker-api.onrender.com"
+private val http = OkHttpClient.Builder()
+    .connectTimeout(30, TimeUnit.SECONDS)
+    .readTimeout(10, TimeUnit.MINUTES)
+    .writeTimeout(10, TimeUnit.MINUTES)
+    .build()
 
 class MainActivity : ComponentActivity() {
-  private val fieldCollectViewModel: FieldCollectViewModel by viewModels()
-
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    enableEdgeToEdge()
-    setContent {
-      MyApplicationTheme {
-        Surface(
-          modifier = Modifier.fillMaxSize(),
-          color = MaterialTheme.colorScheme.background
-        ) {
-          MainScreen(viewModel = fieldCollectViewModel)
-        }
-      }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { MaterialTheme { ShortsMakerScreen() } }
     }
-  }
 }
 
 @Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-  Text(text = "Hello $name!", modifier = modifier)
-}
+private fun ShortsMakerScreen() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var apiKey by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var privacy by remember { mutableStateOf("private") }
+    var selectedVideo by remember { mutableStateOf<Uri?>(null) }
+    var selectedName by remember { mutableStateOf("No video selected") }
+    var message by remember { mutableStateOf("Ready. Enter your app access key to use channel and upload tools.") }
+    var busy by remember { mutableStateOf(false) }
+    var trending by remember { mutableStateOf(listOf<Triple<String, String, String>>()) }
+    var channel by remember { mutableStateOf("") }
 
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-  MyApplicationTheme { Greeting("Android") }
-}
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            selectedVideo = uri
+            selectedName = context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val index = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && c.moveToFirst()) c.getString(index) else null
+            } ?: "Selected video"
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            message = "Video selected: $selectedName"
+        }
+    }
 
+    fun runTask(task: suspend () -> String) {
+        if (busy) return
+        scope.launch {
+            busy = true
+            message = "Please wait…"
+            message = try { task() } catch (e: Exception) { "Error: ${e.message ?: "Request failed"}" }
+            busy = false
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text("MAHADEV", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Text("AI Shorts Maker", style = MaterialTheme.typography.headlineMedium)
+        Text("YouTube tools • Hindi workflow", style = MaterialTheme.typography.bodyMedium)
+
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("1. YouTube Account", style = MaterialTheme.typography.titleMedium)
+                Text("Connect your own channel. Google sign-in opens in your browser.")
+                Button(onClick = {
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$API_BASE/auth/youtube")))
+                    }.onFailure { message = "Could not open Google sign-in: ${it.message}" }
+                }, modifier = Modifier.fillMaxWidth()) { Text("Connect YouTube with Google") }
+                OutlinedTextField(
+                    value = apiKey, onValueChange = { apiKey = it },
+                    label = { Text("App access key") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    enabled = apiKey.isNotBlank() && !busy,
+                    onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/youtube/channel")
+                            .header("x-app-api-key", apiKey).get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Channel request failed (${r.code})"))
+                            text
+                        } }
+                        val j = JSONObject(body)
+                        channel = j.optString("title")
+                        "Connected channel: $channel"
+                    } }, modifier = Modifier.fillMaxWidth()
+                ) { Text("Check My Channel") }
+                if (channel.isNotBlank()) Text("Channel: $channel", color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("2. India YouTube Trending", style = MaterialTheme.typography.titleMedium)
+                Button(enabled = !busy, onClick = { runTask {
+                    val req = Request.Builder().url("$API_BASE/api/youtube/trending?regionCode=IN&maxResults=15").get().build()
+                    val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                        val text = r.body?.string().orEmpty()
+                        if (!r.isSuccessful) error("Trending request failed (${r.code})")
+                        text
+                    } }
+                    val arr = JSONObject(body).optJSONArray("videos") ?: JSONArray()
+                    val result = (0 until arr.length()).map { i ->
+                        val v = arr.getJSONObject(i)
+                        Triple(v.optString("title"), v.optString("channelTitle"), v.optString("url"))
+                    }
+                    trending = result
+                    "Loaded ${result.size} trending video records. Use only content you own or have permission to use."
+                } }, modifier = Modifier.fillMaxWidth()) { Text("Load Trending Videos") }
+                trending.forEachIndexed { index, item ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Text("${index + 1}. ${item.first}", style = MaterialTheme.typography.bodyMedium)
+                        Text(item.second, style = MaterialTheme.typography.labelSmall)
+                        Text(item.third, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        HorizontalDivider()
+                    }
+                }
+            }
+        }
+
+        Card {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("3. Upload Your Video", style = MaterialTheme.typography.titleMedium)
+                Text("Upload only videos you own or are licensed to publish.")
+                OutlinedButton(onClick = { picker.launch(arrayOf("video/*")) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Choose Video")
+                }
+                Text(selectedName, style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Video title") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Description") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+                Text("Privacy")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("private", "unlisted", "public").forEach { value ->
+                        FilterChip(selected = privacy == value, onClick = { privacy = value }, label = { Text(value.replaceFirstChar { it.uppercase() }) })
+                    }
+                }
+                Button(
+                    enabled = !busy && apiKey.isNotBlank() && selectedVideo != null && title.isNotBlank(),
+                    onClick = { runTask {
+                        val uri = selectedVideo ?: error("Choose a video first")
+                        val bytes = withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                ?: error("Could not read selected video")
+                        }
+                        if (bytes.size > 250 * 1024 * 1024) error("Video is larger than 250 MB. Choose a smaller file.")
+                        val videoBody = bytes.toRequestBody("application/octet-stream".toMediaType())
+                        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+                            .addFormDataPart("title", title)
+                            .addFormDataPart("description", description)
+                            .addFormDataPart("privacyStatus", privacy)
+                            .addFormDataPart("video", selectedName, videoBody)
+                            .build()
+                        val req = Request.Builder().url("$API_BASE/api/youtube/upload")
+                            .header("x-app-api-key", apiKey).post(multipart).build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Upload failed (${r.code})"))
+                            text
+                        } }
+                        val j = JSONObject(body)
+                        "Upload successful: ${j.optString("url")}"
+                    } }, modifier = Modifier.fillMaxWidth()
+                ) { Text("Upload to YouTube") }
+            }
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Status", style = MaterialTheme.typography.titleSmall)
+                Text(message)
+            }
+        }
+        Text("Note: Trending shows public metadata only. It does not grant rights to download or repost videos. Automatic clip editing, Hindi captions, Facebook publishing and background scheduling are not included in this build yet.", style = MaterialTheme.typography.bodySmall)
+    }
+}
