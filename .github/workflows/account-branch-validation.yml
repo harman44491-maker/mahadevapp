@@ -29,13 +29,9 @@ jobs:
         with:
           packages: platform-tools platforms;android-36 build-tools;36.0.0
           cmdline-tools-version: latest
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Build debug APK
+      - name: Install Gradle 9.3.1
         run: |
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew :app:assembleDebug
-          else
-            echo "Gradle wrapper is missing from repository."
-            exit 1
-          fi
+          curl -L --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
+          unzip -q /tmp/gradle.zip -d "$RUNNER_TEMP"
+      - name: Build debug APK
+        run: "$RUNNER_TEMP/gradle-9.3.1/bin/gradle" :app:assembleDebug --no-daemon
