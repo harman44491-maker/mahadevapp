@@ -8,6 +8,8 @@ import android.content.ContentValues
 import android.provider.MediaStore
 import java.io.File
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -140,6 +142,71 @@ private fun ShortsMakerScreen() {
             message = "Please wait…"
             message = try { task() } catch (e: Exception) { "Error: ${e.message ?: "Request failed"}" }
             busy = false
+        }
+    }
+
+    // Refresh account connections when returning from the external OAuth browser.
+    val activity = context as? ComponentActivity
+    DisposableEffect(activity, sessionToken) {
+        if (activity == null || sessionToken.isBlank()) {
+            onDispose { }
+        } else {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    scope.launch {
+                        try {
+                            val statusRequest = Request.Builder()
+                                .url("$API_BASE/api/status/integrations")
+                                .header("Authorization", "Bearer $sessionToken")
+                                .get().build()
+                            val statusBody = withContext(Dispatchers.IO) {
+                                http.newCall(statusRequest).execute().use { response ->
+                                    val bodyText = response.body?.string().orEmpty()
+                                    if (!response.isSuccessful) error("Connection status unavailable")
+                                    bodyText
+                                }
+                            }
+                            val status = JSONObject(statusBody)
+                            if (status.optBoolean("youtubeConnected")) {
+                                val request = Request.Builder()
+                                    .url("$API_BASE/api/youtube/channel")
+                                    .header("Authorization", "Bearer $sessionToken")
+                                    .get().build()
+                                val bodyText = withContext(Dispatchers.IO) {
+                                    http.newCall(request).execute().use { response ->
+                                        val text = response.body?.string().orEmpty()
+                                        if (!response.isSuccessful) error("YouTube channel refresh failed")
+                                        text
+                                    }
+                                }
+                                channel = JSONObject(bodyText).optString("title")
+                            }
+                            if (status.optBoolean("facebookConnected")) {
+                                val request = Request.Builder()
+                                    .url("$API_BASE/api/facebook/pages")
+                                    .header("Authorization", "Bearer $sessionToken")
+                                    .get().build()
+                                val bodyText = withContext(Dispatchers.IO) {
+                                    http.newCall(request).execute().use { response ->
+                                        val text = response.body?.string().orEmpty()
+                                        if (!response.isSuccessful) error("Facebook Page refresh failed")
+                                        text
+                                    }
+                                }
+                                val pages = JSONObject(bodyText).optJSONArray("pages") ?: JSONArray()
+                                facebookPages = (0 until pages.length()).map { index ->
+                                    val page = pages.getJSONObject(index)
+                                    page.optString("id") to page.optString("name")
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Keep manual refresh buttons available if a background refresh fails.
+                        }
+                    }
+                }
+            }
+            activity.lifecycle.addObserver(observer)
+            onDispose { activity.lifecycle.removeObserver(observer) }
         }
     }
 
