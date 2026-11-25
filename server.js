@@ -5,6 +5,8 @@ const { Pool } = require("pg");
 const { google } = require("googleapis");
 const multer = require("multer");
 const { Readable } = require("stream");
+const { makeHindiShort } = require("./video-processing");
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v27.0";
 
 const app = express();
 app.use(cors());
@@ -104,7 +106,7 @@ app.get("/", (_req, res) => {
     name: "Mahadev AI Shorts Maker API",
     status: "running",
     version: "1.2.0",
-    endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/api/youtube/channel", "/api/youtube/upload", "/api/status/integrations"]
+    endpoints: ["/health", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/api/youtube/channel", "/api/youtube/upload", "/api/video/process", "/api/facebook/reels", "/api/status/integrations"]
   });
 });
 
@@ -257,21 +259,96 @@ app.post("/api/youtube/upload", requireAppKey, upload.single("video"), async (re
   const title = String(req.body.title || "").trim();
   const description = String(req.body.description || "").trim();
   const privacyStatus = String(req.body.privacyStatus || "private").toLowerCase();
+  const publishAtRaw = String(req.body.publishAt || "").trim();
+  let publishAt = null;
+  if (publishAtRaw) { publishAt = new Date(publishAtRaw); if (Number.isNaN(publishAt.getTime()) || publishAt.getTime() < Date.now() + 10 * 60 * 1000) return res.status(400).json({ error: "INVALID_SCHEDULE_TIME", message: "Schedule at least 10 minutes in the future." }); }
+  if (publishAt && privacyStatus !== "private") return res.status(400).json({ error: "SCHEDULE_REQUIRES_PRIVATE", message: "YouTube scheduled uploads must be private until their publish time." });
   if (!title) return res.status(400).json({ error: "TITLE_REQUIRED" });
   if (!["private", "unlisted", "public"].includes(privacyStatus)) return res.status(400).json({ error: "INVALID_PRIVACY_STATUS" });
   try {
     const youtube = await getYoutubeClient();
     const result = await youtube.videos.insert({
       part: ["snippet", "status"],
-      requestBody: { snippet: { title: title.slice(0, 100), description: description.slice(0, 5000), categoryId: "22" }, status: { privacyStatus, selfDeclaredMadeForKids: false } },
+      requestBody: { snippet: { title: title.slice(0, 100), description: description.slice(0, 5000), categoryId: "22" }, status: { privacyStatus, selfDeclaredMadeForKids: false, ...(publishAt ? { publishAt: publishAt.toISOString() } : {}) } },
       media: { body: Readable.from(req.file.buffer) }
     });
-    res.status(201).json({ success: true, id: result.data.id, title: result.data.snippet?.title || title, privacyStatus: result.data.status?.privacyStatus || privacyStatus, url: result.data.id ? "https://www.youtube.com/watch?v=" + result.data.id : null });
+    res.status(201).json({ success: true, id: result.data.id, title: result.data.snippet?.title || title, privacyStatus: result.data.status?.privacyStatus || privacyStatus, publishAt: publishAt ? publishAt.toISOString() : null, url: result.data.id ? "https://www.youtube.com/watch?v=" + result.data.id : null });
   } catch (e) {
     console.error("YouTube upload failed:", e.message);
     res.status(502).json({ error: "YOUTUBE_UPLOAD_FAILED", message: e.message });
   }
 });
+
+app.post("/api/video/process", requireAppKey, upload.single("video"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "VIDEO_REQUIRED" });
+  if (!req.file.mimetype.startsWith("video/")) return res.status(415).json({ error: "VIDEO_TYPE_REQUIRED" });
+  try {
+    const result = await makeHindiShort(req.file.buffer, {
+      startSeconds: req.body.startSeconds,
+      durationSeconds: req.body.durationSeconds
+    });
+    res.set({
+      "Content-Type": "video/mp4",
+      "Content-Disposition": 'attachment; filename="mahadev-hindi-short.mp4"',
+      "X-Short-Duration": String(result.durationSeconds),
+      "X-Caption-Language": "hi-IN"
+    });
+    res.status(200).send(result.buffer);
+  } catch (e) {
+    console.error("Short processing failed:", e.message);
+    const status = e.message.includes("GOOGLE_SERVICE_ACCOUNT_JSON") ? 503 : 422;
+    res.status(status).json({ error: "SHORT_PROCESSING_FAILED", message: e.message });
+  }
+});
+
+app.post("/api/facebook/reels", requireAppKey, upload.single("video"), async (req, res) => {
+  const pageId = process.env.FACEBOOK_PAGE_ID || "";
+  const pageToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || "";
+  if (!pageId || !pageToken) return res.status(503).json({ error: "FACEBOOK_NOT_CONFIGURED", message: "Add FACEBOOK_PAGE_ID and FACEBOOK_PAGE_ACCESS_TOKEN in Render after granting Page publishing permissions." });
+  if (!req.file) return res.status(400).json({ error: "VIDEO_REQUIRED" });
+  const title = String(req.body.title || "Mahadev AI Short").slice(0, 100);
+  const description = String(req.body.description || "").slice(0, 5000);
+  const publishAtRaw = String(req.body.publishAt || "").trim();
+  let scheduledAt = null;
+  if (publishAtRaw) {
+    scheduledAt = new Date(publishAtRaw);
+    if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() + 10 * 60 * 1000 || scheduledAt.getTime() > Date.now() + 75 * 24 * 60 * 60 * 1000) {
+      return res.status(400).json({ error: "INVALID_SCHEDULE_TIME", message: "Facebook Reel scheduling must be 10 minutes to 75 days ahead." });
+    }
+  }
+  try {
+    const base = "https://graph.facebook.com/" + META_GRAPH_VERSION + "/" + encodeURIComponent(pageId) + "/video_reels";
+    const startUrl = new URL(base);
+    startUrl.searchParams.set("access_token", pageToken);
+    startUrl.searchParams.set("upload_phase", "START");
+    const startResponse = await fetch(startUrl, { method: "POST" });
+    const startData = await startResponse.json();
+    if (!startResponse.ok || !startData.video_id || !startData.upload_url) throw new Error(startData.error?.message || "Facebook Reel upload could not start.");
+    const uploadResponse = await fetch(startData.upload_url, {
+      method: "POST",
+      headers: { Authorization: "OAuth " + pageToken, "offset": "0", "file_size": String(req.file.size), "Content-Type": "application/octet-stream" },
+      body: req.file.buffer
+    });
+    const uploadData = await uploadResponse.json().catch(() => ({}));
+    if (!uploadResponse.ok) throw new Error(uploadData.error?.message || "Facebook Reel binary upload failed.");
+    const finishUrl = new URL(base);
+    finishUrl.searchParams.set("access_token", pageToken);
+    finishUrl.searchParams.set("upload_phase", "FINISH");
+    finishUrl.searchParams.set("video_id", String(startData.video_id));
+    finishUrl.searchParams.set("video_state", scheduledAt ? "SCHEDULED" : "PUBLISHED");
+    finishUrl.searchParams.set("title", title);
+    finishUrl.searchParams.set("description", description);
+    if (scheduledAt) finishUrl.searchParams.set("scheduled_publish_time", String(Math.floor(scheduledAt.getTime() / 1000)));
+    const finishResponse = await fetch(finishUrl, { method: "POST" });
+    const finishData = await finishResponse.json();
+    if (!finishResponse.ok || finishData.success === false) throw new Error(finishData.error?.message || "Facebook Reel publish step failed.");
+    res.status(201).json({ success: true, platform: "facebook_page_reel", videoId: startData.video_id, scheduledAt: scheduledAt ? scheduledAt.toISOString() : null, result: finishData });
+  } catch (e) {
+    console.error("Facebook Reel publish failed:", e.message);
+    res.status(502).json({ error: "FACEBOOK_REEL_FAILED", message: e.message });
+  }
+});
+
 app.get("/api/status/integrations", (_req, res) => {
   res.json({
     youtubeTrending: Boolean(YOUTUBE_API_KEY),
@@ -279,8 +356,11 @@ app.get("/api/status/integrations", (_req, res) => {
     youtubeConnected: Boolean(youtubeTokens?.refresh_token || youtubeTokens?.access_token),
     youtubeUploadConfigured: Boolean(APP_API_KEY),
     youtubeTokenStorage: dbReady ? "postgres_encrypted" : "memory_only_database_not_configured",
-    facebookPublishing: "meta_oauth_not_configured",
-    clipProcessing: "worker_not_configured"
+    facebookPublishing: Boolean(process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN),
+    hindiSpeechToText: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+    clipProcessing: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+    scheduledYouTubePublishing: Boolean(youtubeTokens?.refresh_token),
+    scheduledFacebookPublishing: Boolean(process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN)
   });
 });
 
