@@ -138,6 +138,7 @@ async function initializeTokenStore() {
     )
   `);
   await dbPool.query(`CREATE INDEX IF NOT EXISTS auto_publish_history_user_created_idx ON auto_publish_history(user_id, created_at DESC)`);
+  await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS auto_publish_history_slot_platform_idx ON auto_publish_history(user_id, scheduled_slot, platform) WHERE scheduled_slot IS NOT NULL`);
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS auto_publish_settings (
       user_id UUID PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
@@ -733,6 +734,146 @@ app.get("/api/status/integrations", requireUser, async (req, res) => {
   });
 });
 
+
+
+function istScheduleSlot(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+  }).formatToParts(date).reduce((a, p) => (a[p.type] = p.value, a), {});
+  const hour = Number(parts.hour);
+  if (![9, 14, 19].includes(hour) || Number(parts.minute) > 5) return null;
+  return parts.year + "-" + parts.month + "-" + parts.day + "-" + String(hour).padStart(2, "0") + "00";
+}
+async function youtubeTrendingSignals() {
+  if (!YOUTUBE_API_KEY) throw new Error("YOUTUBE_API_KEY_MISSING");
+  const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+  url.search = new URLSearchParams({ part: "snippet,statistics", chart: "mostPopular", regionCode: "IN", maxResults: "25", key: YOUTUBE_API_KEY });
+  const response = await fetch(url);
+  const data = await response.json();
+  if (!response.ok) throw new Error("YOUTUBE_TRENDS_ERROR: " + (data.error?.message || response.status));
+  return (data.items || []).map(v => ({ title: v.snippet?.title || "", channelTitle: v.snippet?.channelTitle || "", viewCount: v.statistics?.viewCount || "0" }));
+}
+async function publishYoutubeBuffer(userId, buffer, script) {
+  const youtube = await getYoutubeClient(userId);
+  const title = (script.title + " #Shorts").slice(0, 100);
+  const description = (script.description + "\n\n" + (script.hashtags || []).join(" ") + "\n\n#Shorts").slice(0, 5000);
+  const result = await youtube.videos.insert({
+    part: ["snippet", "status"],
+    requestBody: { snippet: { title, description, categoryId: "22", defaultLanguage: "hi" }, status: { privacyStatus: "public", selfDeclaredMadeForKids: false } },
+    media: { body: Readable.from(buffer) }
+  });
+  return { id: result.data.id, url: result.data.id ? "https://www.youtube.com/shorts/" + result.data.id : null, title };
+}
+async function publishFacebookBuffer(userId, buffer, script) {
+  const connection = await getUserConnection(userId, "facebook");
+  const pageId = connection?.selectedPage?.id || "";
+  const pageToken = connection?.selectedPage?.access_token || "";
+  if (!pageId || !pageToken) throw new Error("FACEBOOK_PAGE_NOT_SELECTED");
+  const base = "https://graph.facebook.com/" + META_GRAPH_VERSION + "/" + encodeURIComponent(pageId) + "/video_reels";
+  const startUrl = new URL(base);
+  startUrl.searchParams.set("access_token", pageToken);
+  startUrl.searchParams.set("upload_phase", "START");
+  const startResponse = await fetch(startUrl, { method: "POST" });
+  const startData = await startResponse.json();
+  if (!startResponse.ok || !startData.video_id || !startData.upload_url) throw new Error(startData.error?.message || "FACEBOOK_REEL_START_FAILED");
+  const uploadResponse = await fetch(startData.upload_url, {
+    method: "POST", headers: { Authorization: "OAuth " + pageToken, offset: "0", file_size: String(buffer.length), "Content-Type": "application/octet-stream" }, body: buffer
+  });
+  const uploadData = await uploadResponse.json().catch(() => ({}));
+  if (!uploadResponse.ok) throw new Error(uploadData.error?.message || "FACEBOOK_REEL_UPLOAD_FAILED");
+  const finishUrl = new URL(base);
+  finishUrl.searchParams.set("access_token", pageToken);
+  finishUrl.searchParams.set("upload_phase", "FINISH");
+  finishUrl.searchParams.set("video_id", String(startData.video_id));
+  finishUrl.searchParams.set("video_state", "PUBLISHED");
+  finishUrl.searchParams.set("title", script.title.slice(0, 100));
+  finishUrl.searchParams.set("description", (script.description + " " + (script.hashtags || []).join(" ")).slice(0, 5000));
+  const finishResponse = await fetch(finishUrl, { method: "POST" });
+  const finishData = await finishResponse.json();
+  if (!finishResponse.ok || finishData.success === false) throw new Error(finishData.error?.message || "FACEBOOK_REEL_PUBLISH_FAILED");
+  return { id: String(startData.video_id), url: "https://www.facebook.com/" + encodeURIComponent(pageId) + "/videos/" + encodeURIComponent(String(startData.video_id)), title: script.title };
+}
+async function runAutoPublishForUser(userId, slotKey) {
+  const runId = crypto.randomUUID();
+  const trends = await youtubeTrendingSignals();
+  const generated = await createOriginalShort(trends);
+  const topic = trends[0]?.title || "India trending";
+  const entries = {};
+  for (const platform of ["youtube", "facebook"]) {
+    const inserted = await dbPool.query(
+      `INSERT INTO auto_publish_history (user_id, scheduled_slot, run_id, platform, topic, title, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'processing')
+       ON CONFLICT (user_id, scheduled_slot, platform) WHERE scheduled_slot IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [userId, slotKey, runId, platform, topic, generated.script.title]
+    );
+    if (inserted.rows[0]) entries[platform] = inserted.rows[0].id;
+  }
+  if (!Object.keys(entries).length) return { skipped: true, reason: "ALREADY_PROCESSED", runId };
+  for (const platform of Object.keys(entries)) {
+    try {
+      const published = platform === "youtube"
+        ? await publishYoutubeBuffer(userId, generated.buffer, generated.script)
+        : await publishFacebookBuffer(userId, generated.buffer, generated.script);
+      await dbPool.query(
+        "UPDATE auto_publish_history SET status='published', platform_post_id=$1, post_url=$2, published_at=NOW() WHERE id=$3",
+        [published.id, published.url, entries[platform]]
+      );
+    } catch (error) {
+      await dbPool.query("UPDATE auto_publish_history SET status='failed', error_message=$1 WHERE id=$2", [String(error.message).slice(0, 1500), entries[platform]]);
+      console.error("Auto publish failed for " + platform + " user " + userId + ":", error.message);
+    }
+  }
+  return { success: true, runId, title: generated.script.title, platforms: Object.keys(entries) };
+}
+app.post("/internal/auto/publish", async (req, res) => {
+  const expected = process.env.AUTO_SCHEDULER_TOKEN || "";
+  const supplied = req.get("x-auto-scheduler-token") || "";
+  if (!expected || supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) {
+    return res.status(401).json({ error: "SCHEDULER_UNAUTHORIZED" });
+  }
+  if (!dbPool || !dbReady) return res.status(503).json({ error: "DATABASE_NOT_READY" });
+  const slotKey = istScheduleSlot();
+  if (!slotKey) return res.json({ success: true, skipped: true, reason: "OUTSIDE_SCHEDULE_WINDOW" });
+  try {
+    await dbPool.query(
+      `INSERT INTO auto_publish_settings (user_id, enabled, topic_mode, posts_per_day, timezone)
+       SELECT DISTINCT y.user_id, TRUE, 'mixed', 3, 'Asia/Kolkata'
+       FROM user_connections y JOIN user_connections f ON f.user_id = y.user_id AND f.provider = 'facebook'
+       WHERE y.provider = 'youtube'
+       ON CONFLICT (user_id) DO NOTHING`
+    );
+    const users = await dbPool.query(
+      `SELECT s.user_id FROM auto_publish_settings s
+       JOIN user_connections y ON y.user_id=s.user_id AND y.provider='youtube'
+       JOIN user_connections f ON f.user_id=s.user_id AND f.provider='facebook'
+       WHERE s.enabled=TRUE`
+    );
+    const results = [];
+    for (const row of users.rows) {
+      try { results.push({ userId: row.user_id, ...(await runAutoPublishForUser(row.user_id, slotKey)) }); }
+      catch (error) {
+        console.error("Auto generation failed for user " + row.user_id + ":", error.message);
+        results.push({ userId: row.user_id, success: false, error: error.message });
+      }
+    }
+    res.json({ success: true, slotKey, accounts: users.rowCount, results });
+  } catch (error) {
+    console.error("Scheduler execution failed:", error.message);
+    res.status(500).json({ error: "SCHEDULER_RUN_FAILED", message: error.message });
+  }
+});
+app.post("/api/auto/test-publish", requireUser, async (req, res) => {
+  if (!dbPool || !dbReady) return res.status(503).json({ error: "DATABASE_NOT_READY" });
+  try {
+    const result = await runAutoPublishForUser(req.user.id, "test-" + Date.now());
+    res.json(result);
+  } catch (error) {
+    console.error("AI Short test failed:", error.message);
+    res.status(502).json({ error: "AI_SHORT_TEST_FAILED", message: error.message });
+  }
+});
 
 app.post("/api/auto/generate-preview", requireUser, async (req, res) => {
   if (!YOUTUBE_API_KEY) return res.status(503).json({ error: "YOUTUBE_API_KEY_MISSING" });
