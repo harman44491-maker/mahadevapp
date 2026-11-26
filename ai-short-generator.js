@@ -6,19 +6,35 @@ const ffmpegPath = require("ffmpeg-static");
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash";
+const GEMINI_TEXT_FALLBACK_MODEL = process.env.GEMINI_TEXT_FALLBACK_MODEL || "gemini-3.5-flash-lite";
 const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
 
 async function geminiGenerate(contents, generationConfig = {}) {
   if (!GEMINI_KEY) throw new Error("GEMINI_API_KEY_MISSING");
-  const url = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_TEXT_MODEL + ":generateContent?key=" + encodeURIComponent(GEMINI_KEY);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents, generationConfig })
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error("GEMINI_TEXT_ERROR: " + (data.error?.message || response.status));
-  return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
+  const models = [...new Set([GEMINI_TEXT_MODEL, GEMINI_TEXT_FALLBACK_MODEL].filter(Boolean))];
+  let lastError;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + encodeURIComponent(GEMINI_KEY);
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contents, generationConfig })
+        });
+        const data = await response.json();
+        if (response.ok) return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
+        const message = data.error?.message || response.status;
+        lastError = new Error("GEMINI_TEXT_ERROR (" + model + ", HTTP " + response.status + "): " + message);
+        if (![429, 500, 502, 503, 504].includes(response.status)) throw lastError;
+      } catch (error) {
+        lastError = error;
+        if (!/fetch failed|network|timeout|GEMINI_TEXT_ERROR/.test(String(error.message))) throw error;
+      }
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000 * (2 ** attempt)));
+    }
+  }
+  throw lastError || new Error("GEMINI_TEXT_ERROR: all configured models unavailable");
 }
 
 async function createScript(trends) {
