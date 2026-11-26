@@ -124,7 +124,9 @@ function makeCaptions(narration, duration) {
 }
 async function renderVideo(script, audioResult) {
   const audioBuffer = audioResult.buffer;
-  const isPcm = String(audioResult.mimeType).toLowerCase().startsWith("audio/pcm");
+  const audioMimeType = String(audioResult.mimeType || "").toLowerCase();
+  // Gemini TTS commonly returns raw 24 kHz PCM as audio/L16, not only audio/pcm.
+  const isPcm = audioMimeType.startsWith("audio/pcm") || audioMimeType.startsWith("audio/l16") || audioMimeType.startsWith("audio/x-raw");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "rohitsworld-auto-"));
   const audioPath = path.join(dir, isPcm ? "voice.pcm" : "voice.wav");
   const svgPath = path.join(dir, "background.svg");
