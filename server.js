@@ -501,8 +501,9 @@ app.get("/auth/facebook/login/callback", async (req, res) => {
     const accountsResponse = await fetch("https://graph.facebook.com/" + META_GRAPH_VERSION + "/me/accounts?fields=id,name,access_token,tasks&access_token=" + encodeURIComponent(userToken));
     const accountsData = await accountsResponse.json();
     if (!accountsResponse.ok) throw new Error(accountsData.error?.message || "Could not retrieve Facebook Pages");
-    const email = normalizeEmail(profileData.email || ("facebook_" + profileData.id + "@facebook.local"));
-    const existing = await dbPool.query("SELECT id, email, facebook_sub FROM app_users WHERE facebook_sub = $1 OR email = $2 LIMIT 1", [String(profileData.id), email]);
+    // Do not silently merge Facebook identities by email: Facebook's profile email is not a verified account-linking proof.
+    const email = "facebook_" + String(profileData.id) + "@facebook.local";
+    const existing = await dbPool.query("SELECT id, email, facebook_sub FROM app_users WHERE facebook_sub = $1 LIMIT 1", [String(profileData.id)]);
     let user;
     if (existing.rows[0]) {
       user = existing.rows[0];
