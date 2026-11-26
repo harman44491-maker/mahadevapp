@@ -42,12 +42,15 @@ async function geminiGenerate(contents, generationConfig = {}) {
 
 async function createScript(trends) {
   const prompt = [
-    "Create one original 35-45 second Hindi YouTube Short script inspired by current India trending topics.",
-    "Do not copy, quote, summarize, or reuse any creator's video. Use trend titles only as topic signals.",
-    "Choose one useful, factual, non-defamatory topic. Avoid unverified claims, politics, medical advice, and copyrighted characters.",
-    "Return ONLY valid JSON with keys title, description, narration, hook, hashtags.",
-    "Narration must be natural spoken Hindi in Devanagari, 75-105 words. Title <= 70 characters. Description <= 500 characters. hashtags is an array of 3-5 strings.",
-    "Trend signals: " + JSON.stringify(trends.slice(0, 12).map(t => ({ title: t.title, channel: t.channelTitle, views: t.viewCount })))
+    "Create one original 35-45 second YouTube Short for an Indian audience, based on current India trending signals.",
+    "IMPORTANT: Include Hindi and Punjabi comedy in the mixed-topic rotation whenever comedy, funny, meme, stand-up, viral dialogue, or Punjabi/Hindi entertainment signals appear in the trends. Prefer an original relatable comedy skit with a strong hook, setup, and punchline for those signals. Rotate Hindi comedy and Punjabi-flavoured comedy so both are represented over time.",
+    "For Punjabi comedy, write natural spoken Punjabi vocabulary using Devanagari transliteration so the configured Hindi TTS and captions can read it clearly. For Hindi comedy, use natural conversational Hindi in Devanagari. Choose language based on the trend and vary it across Shorts.",
+    "If no comedy-related trend signal is present, choose another relevant trending topic instead. Do not force a fake claim that something is trending.",
+    "Do not copy, quote, imitate, or reuse any creator's video, script, joke, character, or dialogue. Trend titles are inspiration signals only; invent a fresh situation and punchline.",
+    "Keep comedy family-friendly, non-abusive, non-defamatory, and avoid targeting protected groups or real private people. Avoid unverified claims, politics, medical advice, and copyrighted characters.",
+    "Return ONLY valid JSON with keys title, description, narration, hook, hashtags, language, style.",
+    "Narration must be natural spoken Hindi or Punjabi-flavoured Hindi in Devanagari, 75-105 words. Title <= 70 characters. Description <= 500 characters. hashtags is an array of 3-5 strings. language must be Hindi or Punjabi. style must be Comedy or Trending.",
+    "Trend signals: " + JSON.stringify(trends.slice(0, 25).map(t => ({ title: t.title, channel: t.channelTitle, views: t.viewCount })))
   ].join("\n");
   const raw = await geminiGenerate([{ role: "user", parts: [{ text: prompt }] }], {
     responseMimeType: "application/json",
@@ -58,9 +61,11 @@ async function createScript(trends) {
         description: { type: "STRING" },
         narration: { type: "STRING" },
         hook: { type: "STRING" },
-        hashtags: { type: "ARRAY", items: { type: "STRING" } }
+        hashtags: { type: "ARRAY", items: { type: "STRING" } },
+        language: { type: "STRING", enum: ["Hindi", "Punjabi"] },
+        style: { type: "STRING", enum: ["Comedy", "Trending"] }
       },
-      required: ["title", "description", "narration", "hook", "hashtags"]
+      required: ["title", "description", "narration", "hook", "hashtags", "language", "style"]
     }
   });
   let script;
@@ -76,7 +81,7 @@ async function createHindiVoice(text) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: "Read this Hindi narration naturally in a lively, clear Indian Hindi presenter voice. " + text }] }],
+      contents: [{ role: "user", parts: [{ text: "Read this narration naturally in a lively, clear Indian voice. It may contain Punjabi vocabulary written in Devanagari; pronounce it as colloquial Punjabi rather than translating it. " + text }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } }
