@@ -88,6 +88,11 @@ async function initializeTokenStore() {
     )
   `);
   await dbPool.query(`
+    ALTER TABLE app_users ALTER COLUMN password_hash DROP NOT NULL;
+    ALTER TABLE app_users ADD COLUMN IF NOT EXISTS google_sub TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS app_users_google_sub_idx ON app_users(google_sub) WHERE google_sub IS NOT NULL;
+  `);
+  await dbPool.query(`
     CREATE TABLE IF NOT EXISTS app_sessions (
       token_hash TEXT PRIMARY KEY,
       user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -103,6 +108,11 @@ async function initializeTokenStore() {
       expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+  await dbPool.query(`
+    ALTER TABLE oauth_states ALTER COLUMN user_id DROP NOT NULL;
+    ALTER TABLE oauth_states DROP CONSTRAINT IF EXISTS oauth_states_provider_check;
+    ALTER TABLE oauth_states ADD CONSTRAINT oauth_states_provider_check CHECK (provider IN ('youtube', 'facebook', 'google_login'));
   `);
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS user_connections (
@@ -309,6 +319,82 @@ async function consumeOAuthState(provider, state) {
   const result = await dbPool.query("DELETE FROM oauth_states WHERE state_hash = $1 AND provider = $2 AND expires_at > NOW() RETURNING user_id", [stateHash, provider]);
   return result.rows[0] ? { userId: result.rows[0].user_id } : null;
 }
+
+const GOOGLE_LOGIN_REDIRECT_URI = process.env.GOOGLE_LOGIN_REDIRECT_URI ||
+  "https://mahadev-ai-shorts-maker-api.onrender.com/auth/google/login/callback";
+app.get("/api/auth/google/url", authRateLimit, async (req, res) => {
+  if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE" });
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return res.status(503).json({ error: "GOOGLE_LOGIN_NOT_CONFIGURED", message: "Google sign-in is not configured on the server." });
+  const state = crypto.randomBytes(32).toString("hex");
+  await storeOAuthState("google_login", state, null);
+  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authUrl.search = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_LOGIN_REDIRECT_URI,
+    response_type: "code",
+    scope: "openid email profile https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.upload",
+    access_type: "offline",
+    prompt: "consent",
+    state
+  });
+  res.json({ url: authUrl.toString() });
+});
+app.get("/auth/google/login/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) return res.status(400).send("Google sign-in was not completed. Please return to the app and try again.");
+  if (!code) return res.status(400).send("Missing Google authorization code.");
+  try {
+    const stateRecord = await consumeOAuthState("google_login", state);
+    if (!stateRecord) return res.status(400).send("This Google sign-in link expired. Return to the app and try again.");
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: String(code),
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: GOOGLE_LOGIN_REDIRECT_URI,
+        grant_type: "authorization_code"
+      })
+    });
+    const tokenData = await tokenResponse.json();
+    if (!tokenResponse.ok || !tokenData.id_token) throw new Error(tokenData.error_description || tokenData.error || "Google token exchange failed");
+    const verifier = new google.auth.OAuth2(GOOGLE_CLIENT_ID);
+    const ticket = await verifier.verifyIdToken({ idToken: tokenData.id_token, audience: GOOGLE_CLIENT_ID });
+    const profile = ticket.getPayload();
+    if (!profile?.sub || !profile?.email || profile.email_verified !== true) throw new Error("Google did not provide a verified email address.");
+    const email = normalizeEmail(profile.email);
+    let userResult = await dbPool.query("SELECT id, email, google_sub FROM app_users WHERE google_sub = $1 OR email = $2 ORDER BY (google_sub = $1) DESC LIMIT 1", [profile.sub, email]);
+    let user;
+    if (userResult.rows[0]) {
+      user = userResult.rows[0];
+      if (user.google_sub && user.google_sub !== profile.sub) throw new Error("This email is already linked to another Google account.");
+      await dbPool.query("UPDATE app_users SET google_sub = $1 WHERE id = $2", [profile.sub, user.id]);
+    } else {
+      const inserted = await dbPool.query("INSERT INTO app_users (email, password_hash, google_sub) VALUES ($1, NULL, $2) RETURNING id, email", [email, profile.sub]);
+      user = inserted.rows[0];
+    }
+    const session = await createSession(user.id);
+    await dbPool.query(
+      `INSERT INTO auto_publish_settings (user_id, enabled, topic_mode, posts_per_day, timezone)
+       VALUES ($1, TRUE, 'mixed', 3, 'Asia/Kolkata') ON CONFLICT (user_id) DO NOTHING`,
+      [user.id]
+    );
+    const youtubeTokensForUser = {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token || null,
+      expires_at: Date.now() + (Number(tokenData.expires_in || 3600) * 1000),
+      scope: tokenData.scope || ""
+    };
+    await saveUserConnection(user.id, "youtube", youtubeTokensForUser);
+    const deepLink = "mahadevshorts://auth?token=" + encodeURIComponent(session.token);
+    res.send("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font-family:Arial;padding:24px'><h2>Google sign-in successful</h2><p>Your app account and YouTube channel connection are ready. Your default Auto Pilot schedule is 3 Shorts daily at 09:00, 14:00 and 19:00 IST.</p><p><a style='display:inline-block;padding:14px 20px;background:#166534;color:white;border-radius:8px;text-decoration:none' href='" + deepLink + "'>Return to Auto Pilot app</a></p><script>setTimeout(function(){location.href=" + JSON.stringify(deepLink) + "},700)</script></body></html>");
+  } catch (err) {
+    console.error("Google app sign-in failed:", err.message);
+    res.status(502).send("Google sign-in could not be completed. Please return to the app and try again.");
+  }
+});
+
 app.get("/api/auth/me", requireUser, (req, res) => res.json({ user: req.user }));
 app.post("/api/auth/logout", requireUser, async (req, res) => {
   await dbPool.query("DELETE FROM app_sessions WHERE token_hash = $1", [req.sessionTokenHash]);
