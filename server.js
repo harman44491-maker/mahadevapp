@@ -90,7 +90,9 @@ async function initializeTokenStore() {
   await dbPool.query(`
     ALTER TABLE app_users ALTER COLUMN password_hash DROP NOT NULL;
     ALTER TABLE app_users ADD COLUMN IF NOT EXISTS google_sub TEXT;
+    ALTER TABLE app_users ADD COLUMN IF NOT EXISTS facebook_sub TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS app_users_google_sub_idx ON app_users(google_sub) WHERE google_sub IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS app_users_facebook_sub_idx ON app_users(facebook_sub) WHERE facebook_sub IS NOT NULL;
   `);
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS app_sessions (
@@ -450,6 +452,85 @@ app.get("/api/oauth/youtube/url", requireUser, async (req, res) => {
   });
   res.json({ url: authUrl.toString() });
 });
+
+const META_LOGIN_REDIRECT_URI = process.env.META_LOGIN_REDIRECT_URI ||
+  "https://mahadev-ai-shorts-maker-api.onrender.com/auth/facebook/login/callback";
+app.get("/api/auth/facebook/url", authRateLimit, async (req, res) => {
+  if (!dbPool || !dbReady) return res.status(503).json({ error: "AUTH_DATABASE_UNAVAILABLE" });
+  if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_LOGIN_NOT_CONFIGURED" });
+  const state = crypto.randomBytes(32).toString("hex");
+  await storeOAuthState("facebook_login", state, null);
+  const authUrl = new URL("https://www.facebook.com/" + META_GRAPH_VERSION + "/dialog/oauth");
+  authUrl.search = new URLSearchParams({
+    client_id: META_APP_ID,
+    redirect_uri: META_LOGIN_REDIRECT_URI,
+    response_type: "code",
+    scope: "public_profile,email,pages_show_list,pages_read_engagement,pages_manage_posts",
+    state
+  });
+  if (META_CONFIG_ID) authUrl.searchParams.set("config_id", META_CONFIG_ID);
+  res.json({ url: authUrl.toString() });
+});
+app.get("/auth/facebook/login/callback", async (req, res) => {
+  const { code, state, error, error_description: errorDescription } = req.query;
+  if (error) return res.status(400).send("Facebook sign-in was not completed. Return to the app and try again.");
+  if (!code) return res.status(400).send("Missing Facebook authorization code.");
+  try {
+    const stateRecord = await consumeOAuthState("facebook_login", state);
+    if (!stateRecord) return res.status(400).send("This Facebook sign-in link expired. Return to the app and try again.");
+    const tokenUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/oauth/access_token");
+    tokenUrl.search = new URLSearchParams({
+      client_id: META_APP_ID, client_secret: META_APP_SECRET,
+      redirect_uri: META_LOGIN_REDIRECT_URI, code: String(code)
+    });
+    const shortResponse = await fetch(tokenUrl);
+    const shortData = await shortResponse.json();
+    if (!shortResponse.ok || !shortData.access_token) throw new Error(shortData.error?.message || "Facebook token exchange failed");
+    const exchangeUrl = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/oauth/access_token");
+    exchangeUrl.search = new URLSearchParams({
+      grant_type: "fb_exchange_token", client_id: META_APP_ID, client_secret: META_APP_SECRET,
+      fb_exchange_token: shortData.access_token
+    });
+    const longResponse = await fetch(exchangeUrl);
+    const longData = await longResponse.json();
+    if (!longResponse.ok || !longData.access_token) throw new Error(longData.error?.message || "Facebook long-lived token exchange failed");
+    const userToken = longData.access_token;
+    const profileResponse = await fetch("https://graph.facebook.com/" + META_GRAPH_VERSION + "/me?fields=id,name,email&access_token=" + encodeURIComponent(userToken));
+    const profileData = await profileResponse.json();
+    if (!profileResponse.ok || !profileData.id) throw new Error(profileData.error?.message || "Could not verify Facebook profile");
+    const accountsResponse = await fetch("https://graph.facebook.com/" + META_GRAPH_VERSION + "/me/accounts?fields=id,name,access_token,tasks&access_token=" + encodeURIComponent(userToken));
+    const accountsData = await accountsResponse.json();
+    if (!accountsResponse.ok) throw new Error(accountsData.error?.message || "Could not retrieve Facebook Pages");
+    const email = normalizeEmail(profileData.email || ("facebook_" + profileData.id + "@facebook.local"));
+    const existing = await dbPool.query("SELECT id, email, facebook_sub FROM app_users WHERE facebook_sub = $1 OR email = $2 LIMIT 1", [String(profileData.id), email]);
+    let user;
+    if (existing.rows[0]) {
+      user = existing.rows[0];
+      if (user.facebook_sub && user.facebook_sub !== String(profileData.id)) throw new Error("This email is already linked to another Facebook account.");
+      await dbPool.query("UPDATE app_users SET facebook_sub = $1 WHERE id = $2", [String(profileData.id), user.id]);
+    } else {
+      const inserted = await dbPool.query("INSERT INTO app_users (email, password_hash, facebook_sub) VALUES ($1, NULL, $2) RETURNING id, email", [email, String(profileData.id)]);
+      user = inserted.rows[0];
+    }
+    const pages = (accountsData.data || []).map(p => ({ id: p.id, name: p.name, access_token: p.access_token, tasks: p.tasks || [] }));
+    const eligible = pages.find(p => (p.tasks || []).some(task => ["CREATE_CONTENT", "MANAGE"].includes(task)));
+    const selectedPage = eligible ? { id: eligible.id, name: eligible.name, access_token: eligible.access_token } : null;
+    await saveUserConnection(user.id, "facebook", { userToken, pages, selectedPage });
+    const session = await createSession(user.id);
+    await dbPool.query(
+      `INSERT INTO auto_publish_settings (user_id, enabled, topic_mode, posts_per_day, timezone)
+       VALUES ($1, TRUE, 'mixed', 3, 'Asia/Kolkata') ON CONFLICT (user_id) DO NOTHING`,
+      [user.id]
+    );
+    const deepLink = "mahadevshorts://auth?token=" + encodeURIComponent(session.token);
+    const pageNote = selectedPage ? "Your Facebook Page " + selectedPage.name + " was selected automatically." : "No eligible Facebook Page was found; you can connect one later.";
+    res.send("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font-family:Arial;padding:24px'><h2>Facebook sign-in successful</h2><p>Your app account is ready. " + pageNote + "</p><p>Default Auto Pilot: 3 Shorts daily at 09:00, 14:00 and 19:00 IST.</p><p><a style='display:inline-block;padding:14px 20px;background:#166534;color:white;border-radius:8px;text-decoration:none' href='" + deepLink + "'>Return to Auto Pilot app</a></p><script>setTimeout(function(){location.href=" + JSON.stringify(deepLink) + "},700)</script></body></html>");
+  } catch (err) {
+    console.error("Facebook app sign-in failed:", err.message);
+    res.status(502).send("Facebook sign-in could not be completed. Please return to the app and try again.");
+  }
+});
+
 app.get("/api/oauth/facebook/url", requireUser, async (req, res) => {
   if (!META_APP_ID || !META_APP_SECRET) return res.status(503).json({ error: "FACEBOOK_OAUTH_NOT_CONFIGURED" });
   const state = crypto.randomBytes(32).toString("hex");
