@@ -68,7 +68,7 @@ async function createHindiVoice(text) {
   if (!response.ok) throw new Error("GEMINI_TTS_ERROR: " + (data.error?.message || response.status));
   const audio = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data)?.inlineData?.data;
   if (!audio) throw new Error("GEMINI_TTS_NO_AUDIO");
-  return Buffer.from(audio, "base64");
+  return { buffer: Buffer.from(audio, "base64"), mimeType: data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data)?.inlineData?.mimeType || "audio/wav" };
 }
 
 function runFfmpeg(args) {
@@ -97,9 +97,11 @@ function makeCaptions(narration, duration) {
   }
   return entries.join("\n\n");
 }
-async function renderVideo(script, audioBuffer) {
+async function renderVideo(script, audioResult) {
+  const audioBuffer = audioResult.buffer;
+  const isPcm = String(audioResult.mimeType).toLowerCase().startsWith("audio/pcm");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "rohitsworld-auto-"));
-  const audioPath = path.join(dir, "voice.wav");
+  const audioPath = path.join(dir, isPcm ? "voice.pcm" : "voice.wav");
   const svgPath = path.join(dir, "background.svg");
   const bgPath = path.join(dir, "background.png");
   const srtPath = path.join(dir, "captions.srt");
@@ -109,17 +111,19 @@ async function renderVideo(script, audioBuffer) {
     const safeTitle = String(script.hook || script.title).replace(/[<>&"]/g, " ").slice(0, 90);
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#10153d"/><stop offset="0.55" stop-color="#542c78"/><stop offset="1" stop-color="#0c5965"/></linearGradient><radialGradient id="r"><stop stop-color="#ffcf70" stop-opacity=".45"/><stop offset="1" stop-color="#ffcf70" stop-opacity="0"/></radialGradient></defs><rect width="1080" height="1920" fill="url(#g)"/><circle cx="860" cy="340" r="560" fill="url(#r)"/><circle cx="140" cy="1480" r="500" fill="#25c7bb" opacity=".10"/><rect x="70" y="390" width="940" height="1140" rx="48" fill="#090d26" opacity=".28" stroke="#ffffff" stroke-opacity=".3" stroke-width="3"/><text x="540" y="700" text-anchor="middle" fill="#ffd36e" font-family="sans-serif" font-size="48" font-weight="bold">ROHITSWORLD</text><text x="540" y="870" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="68" font-weight="bold">' + safeTitle + '</text><text x="540" y="1430" text-anchor="middle" fill="#ffffff" opacity=".8" font-family="sans-serif" font-size="34">ऐसी और जानकारी के लिए जुड़े रहें</text></svg>';
     await fs.writeFile(svgPath, svg, "utf8");
-    await fs.writeFile(srtPath, makeCaptions(script.narration, 42), "utf8");
+    const audioDuration = isPcm ? audioBuffer.length / 48000 : (audioBuffer.length > 44 ? audioBuffer.readUInt32LE(40) / 48000 : 42);
+    const duration = Math.max(3, Math.min(60, audioDuration || 42));
+    await fs.writeFile(srtPath, makeCaptions(script.narration, duration), "utf8");
     await runFfmpeg(["-y", "-i", svgPath, bgPath]);
     const escapedSrt = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
     await runFfmpeg([
-      "-y", "-loop", "1", "-i", bgPath, "-i", audioPath, "-t", "60",
+      "-y", "-loop", "1", "-i", bgPath, ...(isPcm ? ["-f", "s16le", "-ar", "24000", "-ac", "1"] : []), "-i", audioPath, "-t", "60",
       "-vf", "scale=1080:1920,zoompan=z='min(zoom+0.0005,1.08)':d=1:s=1080x1920:fps=30,subtitles='" + escapedSrt + "':force_style='FontName=Noto Sans Devanagari,FontSize=22,Outline=3,Shadow=1,Alignment=2,MarginV=180'",
       "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "25", "-threads", "2",
       "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", outPath
     ]);
     const buffer = await fs.readFile(outPath);
-    return { buffer, durationSeconds: Math.min(60, Math.ceil(buffer.length / 1) ? 42 : 42) };
+    return { buffer, durationSeconds: Math.round(duration) };
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
