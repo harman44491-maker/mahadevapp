@@ -14,9 +14,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.foundation.relocation.rememberBringIntoViewRequester
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -107,6 +107,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ShortsMakerScreen() {
     val context = LocalContext.current
@@ -127,10 +128,10 @@ private fun ShortsMakerScreen() {
     var facebookPages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
 
     // Dashboard shortcuts scroll directly to each existing feature section.
-    val accountsSection = rememberBringIntoViewRequester()
-    val trendingSection = rememberBringIntoViewRequester()
-    val editorSection = rememberBringIntoViewRequester()
-    val publishSection = rememberBringIntoViewRequester()
+    val accountsSection = remember { BringIntoViewRequester() }
+    val trendingSection = remember { BringIntoViewRequester() }
+    val editorSection = remember { BringIntoViewRequester() }
+    val publishSection = remember { BringIntoViewRequester() }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
