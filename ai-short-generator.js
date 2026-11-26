@@ -5,8 +5,8 @@ const { spawn } = require("child_process");
 const ffmpegPath = require("ffmpeg-static");
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
-const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
+const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash";
+const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts";
 
 async function geminiGenerate(contents, generationConfig = {}) {
   if (!GEMINI_KEY) throw new Error("GEMINI_API_KEY_MISSING");
