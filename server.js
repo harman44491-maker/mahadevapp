@@ -120,6 +120,34 @@ async function initializeTokenStore() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS auto_publish_history (
+      id BIGSERIAL PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      scheduled_slot TEXT,
+      run_id TEXT NOT NULL,
+      platform TEXT NOT NULL CHECK (platform IN ('youtube','facebook')),
+      topic TEXT,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('processing','published','failed')),
+      platform_post_id TEXT,
+      post_url TEXT,
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      published_at TIMESTAMPTZ
+    )
+  `);
+  await dbPool.query(`CREATE INDEX IF NOT EXISTS auto_publish_history_user_created_idx ON auto_publish_history(user_id, created_at DESC)`);
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS auto_publish_settings (
+      user_id UUID PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      topic_mode TEXT NOT NULL DEFAULT 'mixed',
+      posts_per_day INTEGER NOT NULL DEFAULT 3,
+      timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
   if (TOKEN_ENCRYPTION_KEY && /^[a-f0-9]{64}$/i.test(TOKEN_ENCRYPTION_KEY)) {
     const result = await dbPool.query(
       "SELECT encrypted_value FROM app_secrets WHERE secret_name = $1",
@@ -640,6 +668,49 @@ app.post("/api/facebook/reels", requireUser, upload.single("video"), async (req,
     console.error("Facebook Reel publish failed:", e.message);
     res.status(502).json({ error: "FACEBOOK_REEL_FAILED", message: e.message });
   }
+});
+
+
+app.get("/api/publishing/history", requireUser, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 100);
+  try {
+    const result = await dbPool.query(
+      `SELECT id, scheduled_slot, run_id, platform, topic, title, status, platform_post_id, post_url, error_message, created_at, published_at
+       FROM auto_publish_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [req.user.id, limit]
+    );
+    res.json({ items: result.rows });
+  } catch (error) {
+    console.error("Publishing history lookup failed:", error.message);
+    res.status(503).json({ error: "PUBLISHING_HISTORY_UNAVAILABLE" });
+  }
+});
+app.get("/api/auto/settings", requireUser, async (req, res) => {
+  try {
+    await dbPool.query(
+      `INSERT INTO auto_publish_settings (user_id, enabled, topic_mode, posts_per_day, timezone)
+       VALUES ($1, TRUE, 'mixed', 3, 'Asia/Kolkata') ON CONFLICT (user_id) DO NOTHING`,
+      [req.user.id]
+    );
+    const result = await dbPool.query(
+      "SELECT enabled, topic_mode, posts_per_day, timezone FROM auto_publish_settings WHERE user_id = $1",
+      [req.user.id]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(503).json({ error: "AUTO_SETTINGS_UNAVAILABLE" });
+  }
+});
+app.put("/api/auto/settings", requireUser, async (req, res) => {
+  const enabled = req.body.enabled !== false;
+  const topicMode = ["mixed","technology","education","entertainment","news","facts"].includes(String(req.body.topicMode || "mixed")) ? String(req.body.topicMode || "mixed") : "mixed";
+  await dbPool.query(
+    `INSERT INTO auto_publish_settings (user_id, enabled, topic_mode, posts_per_day, timezone)
+     VALUES ($1, $2, $3, 3, 'Asia/Kolkata')
+     ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled, topic_mode = EXCLUDED.topic_mode, posts_per_day = 3, timezone = 'Asia/Kolkata', updated_at = NOW()`,
+    [req.user.id, enabled, topicMode]
+  );
+  res.json({ success: true, enabled, topicMode, postsPerDay: 3, timezone: "Asia/Kolkata", publishTimes: ["09:00","14:00","19:00"] });
 });
 
 app.get("/api/status/integrations", requireUser, async (req, res) => {
