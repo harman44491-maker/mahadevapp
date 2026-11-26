@@ -50,7 +50,8 @@ async function createScript(trends) {
     "Keep comedy family-friendly, non-abusive, non-defamatory, and avoid targeting protected groups or real private people. Avoid unverified claims, politics, medical advice, and copyrighted characters.",
     "Return ONLY valid JSON with keys title, description, narration, hook, hashtags, language, style.",
     "Narration must be natural spoken Hindi or Punjabi-flavoured Hindi in Devanagari, 75-105 words. Title <= 70 characters. Description <= 500 characters. hashtags is an array of 3-5 strings. language must be Hindi or Punjabi. style must be Comedy or Trending.",
-    "Trend signals: " + JSON.stringify(trends.slice(0, 25).map(t => ({ title: t.title, channel: t.channelTitle, views: t.viewCount })))
+    "Use both YouTube India trending signals and connected Facebook Page engagement signals when available. Facebook signals describe the user own Page posts, not all-Facebook global trends. Prefer topics supported by both sources; when Facebook signals are sparse, use YouTube signals without inventing Facebook trends. Create a fresh original scenario and never reuse source footage, dialogue, jokes, or creator identity.",
+    "Trend signals: " + JSON.stringify(trends.slice(0, 25).map(t => ({ title: t.title, channel: t.channelTitle, engagement: t.viewCount, source: t.source || "youtube_india_trending" })))
   ].join("\n");
   const raw = await geminiGenerate([{ role: "user", parts: [{ text: prompt }] }], {
     responseMimeType: "application/json",
