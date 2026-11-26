@@ -14,6 +14,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.relocation.rememberBringIntoViewRequester
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -123,6 +126,12 @@ private fun ShortsMakerScreen() {
     var channel by remember { mutableStateOf("") }
     var facebookPages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
 
+    // Dashboard shortcuts scroll directly to each existing feature section.
+    val accountsSection = rememberBringIntoViewRequester()
+    val trendingSection = rememberBringIntoViewRequester()
+    val editorSection = rememberBringIntoViewRequester()
+    val publishSection = rememberBringIntoViewRequester()
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             selectedVideo = uri
@@ -218,6 +227,23 @@ private fun ShortsMakerScreen() {
         Text("AI Shorts Maker", style = MaterialTheme.typography.headlineMedium)
         Text("YouTube tools • Hindi workflow", style = MaterialTheme.typography.bodyMedium)
 
+        if (sessionToken.isNotBlank()) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Dashboard", style = MaterialTheme.typography.titleLarge)
+                    Text("Quick access • Rohitsworld Facebook Page workflow", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(onClick = { scope.launch { accountsSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Accounts") }
+                        OutlinedButton(onClick = { scope.launch { trendingSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Trending") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(onClick = { scope.launch { editorSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Video Editor") }
+                        Button(onClick = { scope.launch { publishSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Publish") }
+                    }
+                }
+            }
+        }
+
         if (sessionToken.isBlank()) {
             Card {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -253,7 +279,7 @@ private fun ShortsMakerScreen() {
                 }
             }
         } else {
-            Card {
+            Card(modifier = Modifier.bringIntoViewRequester(accountsSection)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("1. Your Connected Accounts", style = MaterialTheme.typography.titleMedium)
                     Text("Your YouTube and Facebook connections are saved separately to your account.")
@@ -330,7 +356,7 @@ private fun ShortsMakerScreen() {
             }
         }
 
-        Card {
+        Card(modifier = Modifier.bringIntoViewRequester(trendingSection)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("2. India YouTube Trending", style = MaterialTheme.typography.titleMedium)
                 Button(enabled = !busy, onClick = { runTask {
@@ -359,7 +385,7 @@ private fun ShortsMakerScreen() {
             }
         }
 
-        Card {
+        Card(modifier = Modifier.bringIntoViewRequester(editorSection)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("3. Create Hindi Captioned Short", style = MaterialTheme.typography.titleMedium)
                 Text("Selected video ko 9:16 vertical format mein crop karein, Hindi speech captions burn karein, aur MP4 ko phone mein save karein.")
@@ -422,7 +448,7 @@ private fun ShortsMakerScreen() {
             }
         }
 
-        Card {
+        Card(modifier = Modifier.bringIntoViewRequester(publishSection)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("4. Upload Your Video", style = MaterialTheme.typography.titleMedium)
                 Text("Upload only videos you own or are licensed to publish.")
