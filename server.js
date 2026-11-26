@@ -508,8 +508,23 @@ app.get("/auth/facebook/callback", async (req, res) => {
       throw err;
     }
     const pages = (accountsData.data || []).map(p => ({ id: p.id, name: p.name, access_token: p.access_token, tasks: p.tasks || [] }));
-    const storage = await saveUserConnection(stateRecord.userId, "facebook", { userToken, pages, selectedPage: null });
-    res.send("<h2>Facebook connected</h2><p>" + pages.length + " Page(s) found. Return to Mahadev AI Shorts Maker and select the Page to publish Reels.</p><p>Token storage: " + storage + ".</p>");
+    // Hands-free onboarding: automatically choose the first Page that can publish content.
+    const eligiblePage = pages.find(p => (p.tasks || []).some(task => ["CREATE_CONTENT", "MANAGE"].includes(task)));
+    const selectedPage = eligiblePage
+      ? { id: eligiblePage.id, name: eligiblePage.name, access_token: eligiblePage.access_token }
+      : null;
+    const storage = await saveUserConnection(stateRecord.userId, "facebook", { userToken, pages, selectedPage });
+    // Create the standard Auto Pilot defaults as soon as the account connects.
+    await dbPool.query(
+      `INSERT INTO auto_publish_settings (user_id, enabled, topic_mode, posts_per_day, timezone)
+       VALUES ($1, TRUE, 'mixed', 3, 'Asia/Kolkata')
+       ON CONFLICT (user_id) DO NOTHING`,
+      [stateRecord.userId]
+    );
+    const pageMessage = selectedPage
+      ? " Page " + selectedPage.name + " was selected automatically for Reels publishing."
+      : " No Page with publishing permission was found; grant Page content permissions and reconnect.";
+    res.send("<h2>Facebook connected</h2><p>" + pages.length + " Page(s) found." + pageMessage + "</p><p>Auto Pilot defaults: 3 Shorts daily at 09:00, 14:00 and 19:00 IST. Token storage: " + storage + ".</p><p>You may close this page and return to the app.</p>");
   } catch (err) {
     console.error("Facebook OAuth callback failed:", JSON.stringify({
       stage: oauthStage, message: err.message, httpStatus: err.httpStatus || null,
