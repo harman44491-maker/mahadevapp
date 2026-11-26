@@ -309,6 +309,18 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                         "Google sign-in opened. Complete approval, then return to the app."
                     } }, modifier = Modifier.fillMaxWidth()) { Text("Continue with Google") }
+                    OutlinedButton(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/auth/facebook/url").get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Facebook sign-in unavailable (HTTP " + r.code + ")"))
+                            text
+                        } }
+                        val url = JSONObject(body).optString("url")
+                        if (url.isBlank()) error("Facebook sign-in URL missing")
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        "Facebook sign-in opened. Approve permissions and return to the app."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Continue with Facebook") }
                     Text("Or use email and password", style = MaterialTheme.typography.labelMedium)
                     OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password (minimum 8 characters)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
