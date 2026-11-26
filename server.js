@@ -1040,6 +1040,24 @@ app.post("/internal/auto/publish", async (req, res) => {
     return res.status(401).json({ error: "SCHEDULER_UNAUTHORIZED" });
   }
   if (!dbPool || !dbReady) return res.status(503).json({ error: "DATABASE_NOT_READY" });
+  const testMode = req.body?.testMode === true;
+  if (testMode) {
+    try {
+      const trends = await youtubeTrendingSignals();
+      const generated = await createOriginalShort(trends);
+      return res.json({
+        success: true, testMode: true, published: false,
+        message: "Test completed. Video was generated but not uploaded or published.",
+        title: generated.script.title,
+        description: generated.script.description,
+        hashtags: generated.script.hashtags || [],
+        videoBytes: generated.buffer.length
+      });
+    } catch (error) {
+      console.error("Auto publish test generation failed:", error.message);
+      return res.status(502).json({ error: "SCHEDULER_TEST_FAILED", message: error.message });
+    }
+  }
   const slotKey = istScheduleSlot();
   if (!slotKey) return res.json({ success: true, skipped: true, reason: "OUTSIDE_SCHEDULE_WINDOW" });
   try {
