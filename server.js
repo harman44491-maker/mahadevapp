@@ -742,7 +742,7 @@ function istScheduleSlot(date = new Date()) {
     hour: "2-digit", minute: "2-digit", hourCycle: "h23"
   }).formatToParts(date).reduce((a, p) => (a[p.type] = p.value, a), {});
   const hour = Number(parts.hour);
-  if (![9, 14, 19].includes(hour) || Number(parts.minute) > 5) return null;
+  if (![9, 14, 19].includes(hour)) return null;
   return parts.year + "-" + parts.month + "-" + parts.day + "-" + String(hour).padStart(2, "0") + "00";
 }
 async function youtubeTrendingSignals() {
