@@ -14,6 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -267,7 +268,7 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).verticalScroll(rememberScrollState()).padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text("MAHADEV", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
@@ -275,7 +276,7 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
         Text("YouTube tools • Hindi workflow", style = MaterialTheme.typography.bodyMedium)
 
         if (sessionToken.isNotBlank()) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Dashboard", style = MaterialTheme.typography.titleLarge)
                     Text("Quick access • Rohitsworld Facebook Page workflow", style = MaterialTheme.typography.bodySmall)
