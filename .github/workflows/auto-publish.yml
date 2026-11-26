@@ -8,6 +8,7 @@ on:
 jobs:
   trigger-auto-publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Trigger India-time publishing slot
         env:
