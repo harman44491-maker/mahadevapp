@@ -673,16 +673,24 @@ private fun ShortsMakerScreen() {
                         publishingHistory.forEach { item ->
                             val platform = item.optString("platform").replaceFirstChar { it.uppercase() }
                             val status = item.optString("status").uppercase()
+                            val errorMessage = item.opt("error_message")
+                                ?.takeIf { it != JSONObject.NULL }
+                                ?.toString()
+                                ?.takeIf { it.isNotBlank() && it != "null" }
                             Column(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(item.optString("title"), style = MaterialTheme.typography.titleSmall)
-                                Text("$platform • $status", color = if (status == "PUBLISHED") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                                Text(item.optString("title").takeIf { it != "null" }.orEmpty(), style = MaterialTheme.typography.titleSmall)
+                                Text("$platform • $status", color = when (status) {
+                                    "PUBLISHED" -> MaterialTheme.colorScheme.primary
+                                    "FAILED" -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                })
                                 Text(item.optString("created_at"), style = MaterialTheme.typography.labelSmall)
                                 if (item.optString("post_url").isNotBlank()) {
                                     TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(item.optString("post_url")))) }) {
                                         Text("Open published post")
                                     }
                                 }
-                                if (item.optString("error_message").isNotBlank()) Text(item.optString("error_message"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                if (errorMessage != null) Text(errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                             }
                             HorizontalDivider()
                         }
