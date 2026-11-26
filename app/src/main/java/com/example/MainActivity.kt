@@ -125,15 +125,26 @@ private val http = OkHttpClient.Builder()
     .build()
 
 class MainActivity : ComponentActivity() {
+    private var incomingGoogleToken by mutableStateOf("")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { ShortsMakerScreen() } }
+        incomingGoogleToken = intent?.data?.takeIf { it.scheme == "mahadevshorts" && it.host == "auth" }
+            ?.getQueryParameter("token").orEmpty()
+        setContent { MaterialTheme { ShortsMakerScreen(incomingGoogleToken) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        incomingGoogleToken = intent.data?.takeIf { it.scheme == "mahadevshorts" && it.host == "auth" }
+            ?.getQueryParameter("token").orEmpty()
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ShortsMakerScreen() {
+private fun ShortsMakerScreen(initialAuthToken: String = "") {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var sessionToken by remember { mutableStateOf(loadSession(context)) }
@@ -152,6 +163,14 @@ private fun ShortsMakerScreen() {
     var facebookPages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
     var publishingHistory by remember { mutableStateOf(listOf<JSONObject>()) }
     var autoPublishEnabled by remember { mutableStateOf(true) }
+
+    LaunchedEffect(initialAuthToken) {
+        if (initialAuthToken.isNotBlank()) {
+            sessionToken = initialAuthToken
+            saveSession(context, initialAuthToken)
+            message = "Google login successful. Your YouTube account is connected."
+        }
+    }
 
     // Dashboard shortcuts scroll directly to each existing feature section.
     val accountsSection = remember { BringIntoViewRequester() }
@@ -276,7 +295,21 @@ private fun ShortsMakerScreen() {
         if (sessionToken.isBlank()) {
             Card {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Account Login / Signup", style = MaterialTheme.typography.titleMedium)
+                    Text("Welcome to Auto Pilot", style = MaterialTheme.typography.titleMedium)
+                    Text("Continue with Google to create your account and connect YouTube automatically. Facebook Page connection is the next step.", style = MaterialTheme.typography.bodySmall)
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/auth/google/url").get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { r ->
+                            val text = r.body?.string().orEmpty()
+                            if (!r.isSuccessful) error(JSONObject(text).optString("message", "Google sign-in unavailable (HTTP " + r.code + ")"))
+                            text
+                        } }
+                        val url = JSONObject(body).optString("url")
+                        if (url.isBlank()) error("Google sign-in URL missing")
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        "Google sign-in opened. Complete approval, then return to the app."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Continue with Google") }
+                    Text("Or use email and password", style = MaterialTheme.typography.labelMedium)
                     OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password (minimum 8 characters)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
