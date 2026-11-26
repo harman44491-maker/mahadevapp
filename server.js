@@ -947,6 +947,18 @@ async function youtubeTrendingSignals() {
   if (!response.ok) throw new Error("YOUTUBE_TRENDS_ERROR: " + (data.error?.message || response.status));
   return (data.items || []).map(v => ({ title: v.snippet?.title || "", channelTitle: v.snippet?.channelTitle || "", viewCount: v.statistics?.viewCount || "0" }));
 }
+async function facebookPageTrendSignals(userId) {
+  const connection = await getUserConnection(userId, "facebook");
+  const pageId = connection?.selectedPage?.id || "";
+  const pageToken = connection?.selectedPage?.access_token || "";
+  if (!pageId || !pageToken) return [];
+  const url = new URL("https://graph.facebook.com/" + META_GRAPH_VERSION + "/" + encodeURIComponent(pageId) + "/posts");
+  url.search = new URLSearchParams({ fields: "message,created_time,likes.summary(true),comments.summary(true),shares", limit: "20", access_token: pageToken });
+  const response = await fetch(url);
+  const data = await response.json();
+  if (!response.ok) { console.warn("Facebook Page trend signals unavailable:", data.error?.message || response.status); return []; }
+  return (data.data || []).map(post => ({ title: String(post.message || "").trim().slice(0, 220), channelTitle: "Facebook Page performance", viewCount: String((post.likes?.summary?.total_count || 0) + (post.comments?.summary?.total_count || 0) + (post.shares?.count || 0)), source: "facebook_page_engagement", createdAt: post.created_time || "" })).filter(item => item.title);
+}
 async function publishYoutubeBuffer(userId, buffer, script) {
   const youtube = await getYoutubeClient(userId);
   const title = (script.title + " #Shorts").slice(0, 100);
@@ -1003,7 +1015,11 @@ async function runAutoPublishForUser(userId, slotKey) {
   }
   if (!Object.keys(entries).length) return { skipped: true, reason: "ALREADY_PROCESSED", runId };
   try {
-    const trends = await youtubeTrendingSignals();
+    const youtubeTrends = await youtubeTrendingSignals();
+    const facebookTrends = await facebookPageTrendSignals(userId);
+    const trends = [...youtubeTrends.map(item => ({ ...item, source: "youtube_india_trending" })), ...facebookTrends]
+      .sort((a, b) => Number(b.viewCount || 0) - Number(a.viewCount || 0));
+    if (!trends.length) throw new Error("NO_CROSS_PLATFORM_TREND_SIGNALS");
     const generated = await createOriginalShort(trends);
     const actualTopic = trends[0]?.title || topic;
     await dbPool.query(
@@ -1043,7 +1059,11 @@ app.post("/internal/auto/publish", async (req, res) => {
   const testMode = req.body?.testMode === true;
   if (testMode) {
     try {
-      const trends = await youtubeTrendingSignals();
+      const youtubeTrends = await youtubeTrendingSignals();
+      const linkedUsers = await dbPool.query("SELECT user_id FROM user_connections WHERE provider='facebook' ORDER BY updated_at DESC LIMIT 1");
+      const facebookTrends = linkedUsers.rows[0] ? await facebookPageTrendSignals(linkedUsers.rows[0].user_id) : [];
+      const trends = [...youtubeTrends.map(item => ({ ...item, source: "youtube_india_trending" })), ...facebookTrends]
+        .sort((a, b) => Number(b.viewCount || 0) - Number(a.viewCount || 0));
       const generated = await createOriginalShort(trends);
       return res.json({
         success: true, testMode: true, published: false,
