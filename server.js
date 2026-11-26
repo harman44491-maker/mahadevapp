@@ -796,9 +796,7 @@ async function publishFacebookBuffer(userId, buffer, script) {
 }
 async function runAutoPublishForUser(userId, slotKey) {
   const runId = crypto.randomUUID();
-  const trends = await youtubeTrendingSignals();
-  const generated = await createOriginalShort(trends);
-  const topic = trends[0]?.title || "India trending";
+  const topic = "India trending";
   const entries = {};
   for (const platform of ["youtube", "facebook"]) {
     const inserted = await dbPool.query(
@@ -806,26 +804,41 @@ async function runAutoPublishForUser(userId, slotKey) {
        VALUES ($1,$2,$3,$4,$5,$6,'processing')
        ON CONFLICT (user_id, scheduled_slot, platform) WHERE scheduled_slot IS NOT NULL DO NOTHING
        RETURNING id`,
-      [userId, slotKey, runId, platform, topic, generated.script.title]
+      [userId, slotKey, runId, platform, topic, "AI Short generation in progress"]
     );
     if (inserted.rows[0]) entries[platform] = inserted.rows[0].id;
   }
   if (!Object.keys(entries).length) return { skipped: true, reason: "ALREADY_PROCESSED", runId };
-  for (const platform of Object.keys(entries)) {
-    try {
-      const published = platform === "youtube"
-        ? await publishYoutubeBuffer(userId, generated.buffer, generated.script)
-        : await publishFacebookBuffer(userId, generated.buffer, generated.script);
-      await dbPool.query(
-        "UPDATE auto_publish_history SET status='published', platform_post_id=$1, post_url=$2, published_at=NOW() WHERE id=$3",
-        [published.id, published.url, entries[platform]]
-      );
-    } catch (error) {
-      await dbPool.query("UPDATE auto_publish_history SET status='failed', error_message=$1 WHERE id=$2", [String(error.message).slice(0, 1500), entries[platform]]);
-      console.error("Auto publish failed for " + platform + " user " + userId + ":", error.message);
+  try {
+    const trends = await youtubeTrendingSignals();
+    const generated = await createOriginalShort(trends);
+    const actualTopic = trends[0]?.title || topic;
+    await dbPool.query(
+      "UPDATE auto_publish_history SET topic=$1, title=$2 WHERE run_id=$3 AND user_id=$4",
+      [actualTopic, generated.script.title, runId, userId]
+    );
+    for (const platform of Object.keys(entries)) {
+      try {
+        const published = platform === "youtube"
+          ? await publishYoutubeBuffer(userId, generated.buffer, generated.script)
+          : await publishFacebookBuffer(userId, generated.buffer, generated.script);
+        await dbPool.query(
+          "UPDATE auto_publish_history SET status='published', platform_post_id=$1, post_url=$2, published_at=NOW() WHERE id=$3",
+          [published.id, published.url, entries[platform]]
+        );
+      } catch (error) {
+        await dbPool.query("UPDATE auto_publish_history SET status='failed', error_message=$1 WHERE id=$2", [String(error.message).slice(0, 1500), entries[platform]]);
+        console.error("Auto publish failed for " + platform + " user " + userId + ":", error.message);
+      }
     }
+    return { success: true, runId, title: generated.script.title, platforms: Object.keys(entries) };
+  } catch (error) {
+    await dbPool.query(
+      "UPDATE auto_publish_history SET status='failed', error_message=$1 WHERE run_id=$2 AND user_id=$3 AND status='processing'",
+      [String(error.message).slice(0, 1500), runId, userId]
+    );
+    throw error;
   }
-  return { success: true, runId, title: generated.script.title, platforms: Object.keys(entries) };
 }
 app.post("/internal/auto/publish", async (req, res) => {
   const expected = process.env.AUTO_SCHEDULER_TOKEN || "";
