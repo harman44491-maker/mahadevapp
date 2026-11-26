@@ -632,8 +632,14 @@ private fun ShortsMakerScreen() {
                         val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { response ->
                             val text = response.body?.string().orEmpty()
                             if (!response.isSuccessful) {
-                                val detail = runCatching { JSONObject(text).optString("message") }.getOrNull()
-                                error(detail?.takeIf { it.isNotBlank() } ?: "AI Short test failed")
+                                val detail = runCatching {
+                                    val json = JSONObject(text)
+                                    json.optString("message").takeIf { it.isNotBlank() }
+                                        ?: json.optString("error").takeIf { it.isNotBlank() }
+                                }.getOrNull()
+                                val bodyDetail = text.replace("\\s+".toRegex(), " ").take(700)
+                                error(detail ?: "AI Short test HTTP ${response.code}: " +
+                                    bodyDetail.ifBlank { response.message.ifBlank { "Empty server response" } })
                             }
                             text
                         } }
