@@ -4,6 +4,8 @@ const path = require("path");
 const { spawn } = require("child_process");
 const ffmpegPath = require("ffmpeg-static");
 const sharp = require("sharp");
+sharp.concurrency(1);
+sharp.cache(false);
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash";
@@ -131,13 +133,16 @@ async function renderVideo(script, audioResult) {
     const audioDuration = isPcm ? audioBuffer.length / 48000 : (audioBuffer.length > 44 ? audioBuffer.readUInt32LE(40) / 48000 : 42);
     const duration = Math.max(3, Math.min(60, audioDuration || 42));
     await fs.writeFile(srtPath, makeCaptions(script.narration, duration), "utf8");
-    await sharp(Buffer.from(svg)).png().resize(1080, 1920).toFile(bgPath);
+    await sharp(Buffer.from(svg), { limitInputPixels: 3_000_000 }).png({ compressionLevel: 9 }).resize(720, 1280, { fit: "fill", kernel: "linear" }).toFile(bgPath);
     const escapedSrt = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
     await runFfmpeg([
-      "-y", "-loop", "1", "-i", bgPath, ...(isPcm ? ["-f", "s16le", "-ar", "24000", "-ac", "1"] : []), "-i", audioPath, "-t", "60",
-      "-vf", "scale=1080:1920,zoompan=z='min(zoom+0.0005,1.08)':d=1:s=1080x1920:fps=30,subtitles='" + escapedSrt + "':force_style='FontName=Noto Sans Devanagari,FontSize=22,Outline=3,Shadow=1,Alignment=2,MarginV=180'",
-      "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "25", "-threads", "2",
-      "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", outPath
+      "-y", "-filter_threads", "1", "-threads", "1",
+      "-loop", "1", "-framerate", "30", "-i", bgPath,
+      ...(isPcm ? ["-f", "s16le", "-ar", "24000", "-ac", "1"] : []), "-i", audioPath,
+      "-t", String(duration),
+      "-vf", "scale=720:1280:flags=fast_bilinear,subtitles='" + escapedSrt + "':force_style='FontName=Noto Sans Devanagari,FontSize=22,Outline=3,Shadow=1,Alignment=2,MarginV=120'",
+      "-r", "30", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "28", "-threads", "1",
+      "-c:a", "aac", "-b:a", "96k", "-shortest", "-movflags", "+faststart", outPath
     ]);
     const buffer = await fs.readFile(outPath);
     return { buffer, durationSeconds: Math.round(duration) };
