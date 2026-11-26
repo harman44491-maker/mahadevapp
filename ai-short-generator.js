@@ -3,6 +3,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const ffmpegPath = require("ffmpeg-static");
+const sharp = require("sharp");
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.8-flash";
@@ -130,7 +131,7 @@ async function renderVideo(script, audioResult) {
     const audioDuration = isPcm ? audioBuffer.length / 48000 : (audioBuffer.length > 44 ? audioBuffer.readUInt32LE(40) / 48000 : 42);
     const duration = Math.max(3, Math.min(60, audioDuration || 42));
     await fs.writeFile(srtPath, makeCaptions(script.narration, duration), "utf8");
-    await runFfmpeg(["-y", "-i", svgPath, bgPath]);
+    await sharp(Buffer.from(svg)).png().resize(1080, 1920).toFile(bgPath);
     const escapedSrt = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
     await runFfmpeg([
       "-y", "-loop", "1", "-i", bgPath, ...(isPcm ? ["-f", "s16le", "-ar", "24000", "-ac", "1"] : []), "-i", audioPath, "-t", "60",
