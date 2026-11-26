@@ -127,6 +127,7 @@ private fun ShortsMakerScreen() {
     var channel by remember { mutableStateOf("") }
     var facebookPages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
     var publishingHistory by remember { mutableStateOf(listOf<JSONObject>()) }
+    var autoPublishEnabled by remember { mutableStateOf(true) }
 
     // Dashboard shortcuts scroll directly to each existing feature section.
     val accountsSection = remember { BringIntoViewRequester() }
@@ -539,6 +540,60 @@ private fun ShortsMakerScreen() {
             }
         }
 
+
+
+        if (sessionToken.isNotBlank()) {
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Auto Pilot Scheduler", style = MaterialTheme.typography.titleMedium)
+                    Text("Mixed Hindi Shorts • Roz 3 posts • 09:00, 14:00, 19:00 IST")
+                    Text(if (autoPublishEnabled) "Auto Pilot: ON" else "Auto Pilot: OFF",
+                        color = if (autoPublishEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(enabled = !busy, onClick = { runTask {
+                            val req = Request.Builder().url("$API_BASE/api/auto/settings")
+                                .header("Authorization", "Bearer $sessionToken").get().build()
+                            val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { response ->
+                                val text = response.body?.string().orEmpty()
+                                if (!response.isSuccessful) error("Auto Pilot settings load failed")
+                                text
+                            } }
+                            autoPublishEnabled = JSONObject(body).optBoolean("enabled", true)
+                            "Auto Pilot settings refreshed."
+                        } }, modifier = Modifier.weight(1f)) { Text("Refresh") }
+                        Button(enabled = !busy, onClick = { runTask {
+                            val next = !autoPublishEnabled
+                            val payload = JSONObject().put("enabled", next).put("topicMode", "mixed").toString()
+                            val req = Request.Builder().url("$API_BASE/api/auto/settings")
+                                .header("Authorization", "Bearer $sessionToken")
+                                .put(payload.toRequestBody("application/json".toMediaType())).build()
+                            withContext(Dispatchers.IO) { http.newCall(req).execute().use { response ->
+                                val text = response.body?.string().orEmpty()
+                                if (!response.isSuccessful) error("Could not update Auto Pilot settings")
+                                text
+                            } }
+                            autoPublishEnabled = next
+                            if (next) "Auto Pilot enabled: 3 Shorts per day." else "Auto Pilot paused."
+                        } }, modifier = Modifier.weight(1f)) { Text(if (autoPublishEnabled) "Pause" else "Enable") }
+                    }
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/auto/test-publish")
+                            .header("Authorization", "Bearer $sessionToken")
+                            .post("{}".toRequestBody("application/json".toMediaType())).build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { response ->
+                            val text = response.body?.string().orEmpty()
+                            if (!response.isSuccessful) {
+                                val detail = runCatching { JSONObject(text).optString("message") }.getOrNull()
+                                error(detail?.takeIf { it.isNotBlank() } ?: "AI Short test failed")
+                            }
+                            text
+                        } }
+                        val result = JSONObject(body)
+                        "AI Short test completed. Title: " + result.optString("title", "Check Publishing History for each platform result.")
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Create & Publish First AI Test Short") }
+                }
+            }
+        }
 
         if (sessionToken.isNotBlank()) {
             Card(modifier = Modifier.bringIntoViewRequester(historySection)) {
