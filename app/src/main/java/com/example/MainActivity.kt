@@ -544,6 +544,34 @@ private fun ShortsMakerScreen() {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Auto Pilot Scheduler", style = MaterialTheme.typography.titleMedium)
                     Text("Mixed Hindi Shorts • Roz 3 posts • 09:00, 14:00, 19:00 IST")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(enabled = !busy, onClick = { runTask {
+                            val req = Request.Builder().url("$API_BASE/api/oauth/youtube/url")
+                                .header("Authorization", "Bearer $sessionToken").get().build()
+                            val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { response ->
+                                val text = response.body?.string().orEmpty()
+                                if (!response.isSuccessful) error(JSONObject(text).optString("message", "Google sign-in could not start"))
+                                text
+                            } }
+                            val url = JSONObject(body).optString("url")
+                            if (url.isBlank()) error("Google sign-in URL missing")
+                            withContext(Dispatchers.Main) { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                            "Google account connection opened."
+                        } }, modifier = Modifier.weight(1f)) { Text("Connect Google") }
+                        OutlinedButton(enabled = !busy, onClick = { runTask {
+                            val req = Request.Builder().url("$API_BASE/api/oauth/facebook/url")
+                                .header("Authorization", "Bearer $sessionToken").get().build()
+                            val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { response ->
+                                val text = response.body?.string().orEmpty()
+                                if (!response.isSuccessful) error(JSONObject(text).optString("message", "Facebook sign-in could not start"))
+                                text
+                            } }
+                            val url = JSONObject(body).optString("url")
+                            if (url.isBlank()) error("Facebook sign-in URL missing")
+                            withContext(Dispatchers.Main) { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                            "Facebook account connection opened."
+                        } }, modifier = Modifier.weight(1f)) { Text("Connect Facebook") }
+                    }
                     Text(if (autoPublishEnabled) "Auto Pilot: ON" else "Auto Pilot: OFF",
                         color = if (autoPublishEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
