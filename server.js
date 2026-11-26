@@ -8,6 +8,7 @@ const { google } = require("googleapis");
 const multer = require("multer");
 const { Readable } = require("stream");
 const { makeHindiShort } = require("./video-processing");
+const { createOriginalShort } = require("./ai-short-generator");
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v27.0";
 
 const app = express();
@@ -659,6 +660,33 @@ app.get("/api/status/integrations", requireUser, async (req, res) => {
     scheduledYouTubePublishing: Boolean(youtubeTokens?.refresh_token),
     scheduledFacebookPublishing: Boolean(facebookConnection?.selectedPage?.id && facebookConnection?.selectedPage?.access_token)
   });
+});
+
+
+app.post("/api/auto/generate-preview", requireUser, async (req, res) => {
+  if (!YOUTUBE_API_KEY) return res.status(503).json({ error: "YOUTUBE_API_KEY_MISSING" });
+  if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "GEMINI_API_KEY_MISSING" });
+  try {
+    const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+    url.search = new URLSearchParams({ part: "snippet,statistics", chart: "mostPopular", regionCode: "IN", maxResults: "20", key: YOUTUBE_API_KEY });
+    const trendResponse = await fetch(url);
+    const trendData = await trendResponse.json();
+    if (!trendResponse.ok) throw new Error("YOUTUBE_TRENDS_ERROR: " + (trendData.error?.message || trendResponse.status));
+    const trends = (trendData.items || []).map(v => ({ title: v.snippet?.title || "", channelTitle: v.snippet?.channelTitle || "", viewCount: v.statistics?.viewCount || "0" }));
+    if (!trends.length) throw new Error("NO_TRENDING_TOPICS");
+    const result = await createOriginalShort(trends);
+    res.set({
+      "Content-Type": "video/mp4",
+      "Content-Disposition": 'attachment; filename="rohitsworld-preview-short.mp4"',
+      "X-Short-Title": encodeURIComponent(result.script.title),
+      "X-Short-Description": encodeURIComponent(result.script.description + " " + (result.script.hashtags || []).join(" "))
+    });
+    return res.status(200).send(result.buffer);
+  } catch (error) {
+    console.error("Automatic Short preview failed:", error.message);
+    const missingKey = error.message.includes("GEMINI_API_KEY_MISSING");
+    return res.status(missingKey ? 503 : 502).json({ error: "AUTO_SHORT_GENERATION_FAILED", message: error.message });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", async () => {
