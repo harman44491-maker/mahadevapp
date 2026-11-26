@@ -5,6 +5,12 @@ on:
     - cron: "30 8 * * *"
     - cron: "30 13 * * *"
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Generate a test preview only (does not publish)"
+        required: true
+        type: boolean
+        default: true
 jobs:
   trigger-auto-publish:
     runs-on: ubuntu-latest
@@ -13,13 +19,21 @@ jobs:
       - name: Trigger India-time publishing slot
         env:
           AUTO_SCHEDULER_TOKEN: ${{ secrets.AUTO_SCHEDULER_TOKEN }}
+          TEST_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.test_mode }}
         run: |
           if [ -z "$AUTO_SCHEDULER_TOKEN" ]; then
             echo "Missing repository secret AUTO_SCHEDULER_TOKEN"
             exit 1
           fi
+          if [ "$TEST_MODE" = "true" ]; then
+            BODY='{"testMode":true}'
+            echo "Running safe test: generate preview only; nothing will be published."
+          else
+            BODY='{}'
+            echo "Running scheduled publishing."
+          fi
           curl --fail-with-body --silent --show-error --retry 8 --retry-delay 15 --retry-all-errors --max-time 600 \
             -X POST "https://mahadev-ai-shorts-maker-api.onrender.com/internal/auto/publish" \
             -H "x-auto-scheduler-token: $AUTO_SCHEDULER_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{}'
+            -d "$BODY"
