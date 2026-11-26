@@ -1111,10 +1111,28 @@ app.post("/internal/auto/publish", async (req, res) => {
 app.post("/api/auto/test-publish", requireUser, async (req, res) => {
   if (!dbPool || !dbReady) return res.status(503).json({ error: "DATABASE_NOT_READY" });
   try {
-    const result = await runAutoPublishForUser(req.user.id, "test-" + Date.now());
-    res.json(result);
+    const youtubeTrends = await youtubeTrendingSignals();
+    const facebookTrends = await facebookPageTrendSignals(req.user.id);
+    const trends = [
+      ...youtubeTrends.map(item => ({ ...item, source: "youtube_india_trending" })),
+      ...facebookTrends
+    ].sort((a, b) => Number(b.viewCount || 0) - Number(a.viewCount || 0));
+    if (!trends.length) throw new Error("NO_CROSS_PLATFORM_TREND_SIGNALS");
+    const generated = await createOriginalShort(trends);
+    return res.json({
+      success: true,
+      testMode: true,
+      published: false,
+      message: "Test preview generated. Nothing was uploaded or published.",
+      title: generated.script.title,
+      description: generated.script.description,
+      hashtags: generated.script.hashtags || [],
+      language: generated.script.language,
+      style: generated.script.style,
+      videoBytes: generated.buffer.length
+    });
   } catch (error) {
-    console.error("AI Short test failed:", error.message);
+    console.error("AI Short safe test failed:", error.message);
     res.status(502).json({ error: "AI_SHORT_TEST_FAILED", message: error.message });
   }
 });
