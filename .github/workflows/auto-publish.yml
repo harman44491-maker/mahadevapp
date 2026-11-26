@@ -1,0 +1,24 @@
+name: Rohitsworld Auto Publish
+on:
+  schedule:
+    - cron: "30 3 * * *"
+    - cron: "30 8 * * *"
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+jobs:
+  trigger-auto-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger India-time publishing slot
+        env:
+          AUTO_SCHEDULER_TOKEN: ${{ secrets.AUTO_SCHEDULER_TOKEN }}
+        run: |
+          if [ -z "$AUTO_SCHEDULER_TOKEN" ]; then
+            echo "Missing repository secret AUTO_SCHEDULER_TOKEN"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error \
+            -X POST "https://mahadev-ai-shorts-maker-api.onrender.com/internal/auto/publish" \
+            -H "x-auto-scheduler-token: $AUTO_SCHEDULER_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{}'
