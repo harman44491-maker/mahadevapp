@@ -38,6 +38,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONArray
 import java.util.concurrent.TimeUnit
+import java.io.IOException
+import java.net.UnknownHostException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -95,9 +99,29 @@ private fun clearSession(context: android.content.Context) {
 
 private const val API_BASE = "https://mahadev-ai-shorts-maker-api.onrender.com"
 private val http = OkHttpClient.Builder()
-    .connectTimeout(30, TimeUnit.SECONDS)
+    // Render Free services can take time to wake from sleep; allow a longer TLS connect.
+    .connectTimeout(120, TimeUnit.SECONDS)
     .readTimeout(10, TimeUnit.MINUTES)
     .writeTimeout(10, TimeUnit.MINUTES)
+    .retryOnConnectionFailure(true)
+    // Retry only safe GET requests on transient DNS/connect failures; never replay publishing POSTs.
+    .addInterceptor { chain ->
+        val request = chain.request()
+        val attempts = if (request.method == "GET") 3 else 1
+        var lastError: IOException? = null
+        for (attempt in 0 until attempts) {
+            try {
+                return@addInterceptor chain.proceed(request)
+            } catch (error: IOException) {
+                lastError = error
+                val retryable = error is UnknownHostException ||
+                    error is ConnectException || error is SocketTimeoutException
+                if (!retryable || attempt == attempts - 1) throw error
+                Thread.sleep(1000L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IOException("API request failed")
+    }
     .build()
 
 class MainActivity : ComponentActivity() {
