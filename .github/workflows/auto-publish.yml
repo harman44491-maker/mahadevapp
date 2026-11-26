@@ -1,9 +1,10 @@
 name: Rohitsworld Auto Publish
 on:
   schedule:
-    - cron: "30 3 * * *"
-    - cron: "30 8 * * *"
-    - cron: "30 13 * * *"
+    # GitHub scheduled runs can be delayed or skipped. Retry every 15 minutes
+    # across the UTC hours covering 9 AM, 2 PM and 7 PM India time.
+    # The API's IST slot key + database unique index make retries idempotent.
+    - cron: "*/15 3,4,8,9,13,14 * * *"
   workflow_dispatch:
     inputs:
       test_mode:
@@ -11,6 +12,11 @@ on:
         required: true
         type: boolean
         default: true
+
+concurrency:
+  group: rohitsworld-auto-publish
+  cancel-in-progress: false
+
 jobs:
   trigger-auto-publish:
     runs-on: ubuntu-latest
