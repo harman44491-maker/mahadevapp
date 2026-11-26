@@ -126,12 +126,14 @@ private fun ShortsMakerScreen() {
     var trending by remember { mutableStateOf(listOf<Triple<String, String, String>>()) }
     var channel by remember { mutableStateOf("") }
     var facebookPages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var publishingHistory by remember { mutableStateOf(listOf<JSONObject>()) }
 
     // Dashboard shortcuts scroll directly to each existing feature section.
     val accountsSection = remember { BringIntoViewRequester() }
     val trendingSection = remember { BringIntoViewRequester() }
     val editorSection = remember { BringIntoViewRequester() }
     val publishSection = remember { BringIntoViewRequester() }
+    val historySection = remember { BringIntoViewRequester() }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -240,6 +242,10 @@ private fun ShortsMakerScreen() {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(onClick = { scope.launch { editorSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Video Editor") }
                         Button(onClick = { scope.launch { publishSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Publish") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(onClick = { scope.launch { publishSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Publish") }
+                        OutlinedButton(onClick = { scope.launch { historySection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("History") }
                     }
                 }
             }
@@ -530,6 +536,48 @@ private fun ShortsMakerScreen() {
                         else "Facebook Reel scheduled. Video ID: " + j.optString("videoId")
                     } }, modifier = Modifier.fillMaxWidth()
                 ) { Text(if (publishAt.isBlank()) "Publish Facebook Reel" else "Schedule Facebook Reel") }
+            }
+        }
+
+
+        if (sessionToken.isNotBlank()) {
+            Card(modifier = Modifier.bringIntoViewRequester(historySection)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("5. Publishing History", style = MaterialTheme.typography.titleMedium)
+                    Text("YouTube aur Facebook par publish hue Shorts, unka status aur link yahan dikhega.")
+                    Button(enabled = !busy, onClick = { runTask {
+                        val req = Request.Builder().url("$API_BASE/api/publishing/history?limit=50")
+                            .header("Authorization", "Bearer $sessionToken").get().build()
+                        val body = withContext(Dispatchers.IO) { http.newCall(req).execute().use { response ->
+                            val bodyText = response.body?.string().orEmpty()
+                            if (!response.isSuccessful) error(JSONObject(bodyText).optString("message", "History load failed"))
+                            bodyText
+                        } }
+                        val arr = JSONObject(body).optJSONArray("items") ?: JSONArray()
+                        publishingHistory = (0 until arr.length()).map { i -> arr.getJSONObject(i) }
+                        "Loaded " + publishingHistory.size + " publishing history records."
+                    } }, modifier = Modifier.fillMaxWidth()) { Text("Refresh Publishing History") }
+                    if (publishingHistory.isEmpty()) {
+                        Text("Abhi history record nahi hai. Agli successful ya failed publishing yahan dikhegi.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        publishingHistory.forEach { item ->
+                            val platform = item.optString("platform").replaceFirstChar { it.uppercase() }
+                            val status = item.optString("status").uppercase()
+                            Column(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(item.optString("title"), style = MaterialTheme.typography.titleSmall)
+                                Text("$platform • $status", color = if (status == "PUBLISHED") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                                Text(item.optString("created_at"), style = MaterialTheme.typography.labelSmall)
+                                if (item.optString("post_url").isNotBlank()) {
+                                    TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(item.optString("post_url")))) }) {
+                                        Text("Open published post")
+                                    }
+                                }
+                                if (item.optString("error_message").isNotBlank()) Text(item.optString("error_message"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
             }
         }
 
