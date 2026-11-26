@@ -242,12 +242,9 @@ private fun ShortsMakerScreen() {
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(onClick = { scope.launch { editorSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Video Editor") }
-                        Button(onClick = { scope.launch { publishSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Publish") }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(onClick = { scope.launch { publishSection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("Publish") }
                         OutlinedButton(onClick = { scope.launch { historySection.bringIntoView() } }, modifier = Modifier.weight(1f)) { Text("History") }
                     }
+                    Button(onClick = { scope.launch { publishSection.bringIntoView() } }, modifier = Modifier.fillMaxWidth()) { Text("Publish") }
                 }
             }
         }
