@@ -675,6 +675,16 @@ app.post("/api/facebook/reels", requireUser, upload.single("video"), async (req,
 app.get("/api/publishing/history", requireUser, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 100);
   try {
+    // A worker killed by a restart/OOM must not leave a row showing PROCESSING forever.
+    // We cannot claim it published; mark it failed with an explicit reconciliation message.
+    await dbPool.query(
+      `UPDATE auto_publish_history
+       SET status = 'failed',
+           error_message = COALESCE(error_message, 'Publishing did not finish; final platform result could not be confirmed. Check the destination account before retrying.')
+       WHERE user_id = $1 AND status = 'processing'
+         AND created_at < NOW() - INTERVAL '20 minutes'`,
+      [req.user.id]
+    );
     const result = await dbPool.query(
       `SELECT id, scheduled_slot, run_id, platform, topic, title, status, platform_post_id, post_url, error_message, created_at, published_at
        FROM auto_publish_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
