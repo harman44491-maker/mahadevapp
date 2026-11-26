@@ -114,7 +114,7 @@ async function initializeTokenStore() {
   await dbPool.query(`
     ALTER TABLE oauth_states ALTER COLUMN user_id DROP NOT NULL;
     ALTER TABLE oauth_states DROP CONSTRAINT IF EXISTS oauth_states_provider_check;
-    ALTER TABLE oauth_states ADD CONSTRAINT oauth_states_provider_check CHECK (provider IN ('youtube', 'facebook', 'google_login'));
+    ALTER TABLE oauth_states ADD CONSTRAINT oauth_states_provider_check CHECK (provider IN ('youtube', 'facebook', 'google_login', 'facebook_login'));
   `);
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS user_connections (
