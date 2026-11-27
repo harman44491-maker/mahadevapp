@@ -171,7 +171,8 @@ async function synthesizeSpeech(text) {
   const wav = path.join(dir, "narration.wav");
   try {
     await fs.promises.writeFile(txt, text, "utf8");
-    const ps = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate=0; $s.Volume=100; $voices=$s.GetInstalledVoices() | ForEach-Object {$_.VoiceInfo}; $hi=$voices | Where-Object {$_.Culture.Name -like 'hi-*'} | Select-Object -First 1; if($hi){$s.SelectVoice($hi.Name)}; $s.SetOutputToWaveFile(" + JSON.stringify(wav) + "); $t=[IO.File]::ReadAllText(" + JSON.stringify(txt) + ",[Text.Encoding]::UTF8); $s.Speak($t); $s.Dispose();";
+    const psQuote = value => "'" + value.replace(/'/g, "''") + "'";
+    const ps = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate=0; $s.Volume=100; $voices=$s.GetInstalledVoices() | ForEach-Object {$_.VoiceInfo}; $hi=$voices | Where-Object {$_.Culture.Name -like 'hi-*'} | Select-Object -First 1; if($hi){$s.SelectVoice($hi.Name)}; $s.SetOutputToWaveFile(" + psQuote(wav) + "); $t=[IO.File]::ReadAllText(" + psQuote(txt) + ",[Text.Encoding]::UTF8); $s.Speak($t); $s.Dispose();";
     await new Promise((resolve,reject)=>{ const p=spawn("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",ps],{windowsHide:true,stdio:["ignore","ignore","pipe"]});let err="";p.stderr.on("data",d=>err+=d.toString());p.on("error",reject);p.on("close",c=>c===0?resolve():reject(new Error("Windows voice generation failed: "+err.slice(-1000)))); });
     const audio=await fs.promises.readFile(wav);
     if(audio.length<1000) throw new Error("Windows voice returned an empty audio file.");
