@@ -930,13 +930,17 @@ app.get("/api/status/integrations", requireUser, async (req, res) => {
 
 
 function istScheduleSlot(date = new Date()) {
+  // Accept delayed retries for 150 minutes after each India-time slot.
+  // All retries map to one key; the database unique index prevents duplicates.
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", hourCycle: "h23"
   }).formatToParts(date).reduce((a, p) => (a[p.type] = p.value, a), {});
-  const hour = Number(parts.hour);
-  if (![9, 14, 19].includes(hour)) return null;
-  return parts.year + "-" + parts.month + "-" + parts.day + "-" + String(hour).padStart(2, "0") + "00";
+  const minutesNow = Number(parts.hour) * 60 + Number(parts.minute);
+  const slots = [{ minute: 540, hour: 9 }, { minute: 840, hour: 14 }, { minute: 1140, hour: 19 }];
+  const slot = slots.find(item => minutesNow >= item.minute && minutesNow < item.minute + 150);
+  if (!slot) return null;
+  return parts.year + "-" + parts.month + "-" + parts.day + "-" + String(slot.hour).padStart(2, "0") + "00";
 }
 async function youtubeTrendingSignals() {
   if (!YOUTUBE_API_KEY) throw new Error("YOUTUBE_API_KEY_MISSING");
