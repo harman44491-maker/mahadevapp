@@ -1011,7 +1011,16 @@ async function runAutoPublishForUser(userId, slotKey) {
     const inserted = await dbPool.query(
       `INSERT INTO auto_publish_history (user_id, scheduled_slot, run_id, platform, topic, title, status)
        VALUES ($1,$2,$3,$4,$5,$6,'processing')
-       ON CONFLICT (user_id, scheduled_slot, platform) WHERE scheduled_slot IS NOT NULL DO NOTHING
+       ON CONFLICT (user_id, scheduled_slot, platform) WHERE scheduled_slot IS NOT NULL
+       DO UPDATE SET run_id = EXCLUDED.run_id,
+                     topic = EXCLUDED.topic,
+                     title = EXCLUDED.title,
+                     status = 'processing',
+                     error_message = NULL,
+                     platform_post_id = NULL,
+                     post_url = NULL,
+                     published_at = NULL
+       WHERE auto_publish_history.status = 'failed'
        RETURNING id`,
       [userId, slotKey, runId, platform, topic, "AI Short generation in progress"]
     );
