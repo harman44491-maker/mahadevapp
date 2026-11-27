@@ -3,6 +3,7 @@ package com.example
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -17,7 +18,7 @@ import java.util.concurrent.TimeUnit
 
 @Composable
 fun AiHelperFeature(sessionToken: String) {
-    val scope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope()\n    val context = LocalContext.current
     var prompt by remember { mutableStateOf("") }
     var taskType by remember { mutableStateOf("General") }
     var answer by remember { mutableStateOf("") }
@@ -86,9 +87,9 @@ fun AiHelperFeature(sessionToken: String) {
                 Text("AI Response", style = MaterialTheme.typography.titleMedium)
                 Text(answer, style = MaterialTheme.typography.bodyMedium)
                 OutlinedButton(onClick = {
-                    val clipboard = android.content.Context.CLIPBOARD_SERVICE
-                    // Clipboard is accessed through the current application context in the host screen.
-                }, enabled = false) { Text("Copy response (coming soon)") }
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("AI Response", answer))
+                }) { Text("Copy Response") }
             }
         }
     }
