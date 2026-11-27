@@ -116,11 +116,12 @@ async function stageUpdate(sourcePath) {
   const stagedExe = path.join(stage, "Mahadev-AI-Shorts-Maker-update.exe");
   await fs.promises.copyFile(sourcePath, stagedExe);
   const ps1 = path.join(stage, "apply-update.ps1");
+  const psQuote = value => "'" + value.replace(/'/g, "''") + "'";
   const script = [
     "$ErrorActionPreference = 'Stop'",
     "$pidToWait = " + process.pid,
-    "$target = " + JSON.stringify(installExe),
-    "$source = " + JSON.stringify(stagedExe),
+    "$target = " + psQuote(installExe),
+    "$source = " + psQuote(stagedExe),
     "try { Wait-Process -Id $pidToWait -Timeout 90 -ErrorAction SilentlyContinue } catch {}",
     "Start-Sleep -Seconds 2",
     "Copy-Item -LiteralPath $source -Destination $target -Force",
