@@ -31,7 +31,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "artifactName": "Mahadev-AI-Shorts-Maker-${version}.${ext}"
     },
     "asarUnpack": [
       "node_modules/node-llama-cpp/**"
