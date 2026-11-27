@@ -1,8 +1,9 @@
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { pipeline } = require("stream/promises");
 const { Readable, Transform } = require("stream");
+const { spawn } = require("child_process");
 
 const MODEL_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
 const MODEL_URL = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true";
@@ -83,6 +84,81 @@ async function loadOfflineModel() {
   }
 }
 
+
+const UPDATE_REPO = "harman44491-maker/mahadevapp";
+const UPDATE_ASSET_PREFIX = "Mahadev-AI-Shorts-Maker-";
+async function checkOnlineUpdate() {
+  const response = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/latest", {
+    headers: { "Accept": "application/vnd.github+json", "User-Agent": "Mahadev-AI-Shorts-Maker" }
+  });
+  if (response.status === 404) return { available: false, published: false, message: "Abhi koi official update release publish nahi hui hai." };
+  if (!response.ok) throw new Error("Update check failed: HTTP " + response.status);
+  const release = await response.json();
+  const asset = (release.assets || []).find(a => a.name.toLowerCase().endsWith(".exe") && a.name.startsWith(UPDATE_ASSET_PREFIX));
+  if (!asset) return { available: false, published: true, version: release.tag_name, message: "Release mili, lekin Windows EXE asset nahi mila." };
+  const current = app.getVersion();
+  const latest = String(release.tag_name || "").replace(/^v/, "");
+  return { available: latest !== current, published: true, currentVersion: current, latestVersion: latest, name: asset.name, size: asset.size, downloadUrl: asset.browser_download_url, notes: release.body || "" };
+}
+async function stageUpdate(sourcePath) {
+  if (!app.isPackaged) throw new Error("Update installation sirf packaged Windows EXE me available hai.");
+  if (process.platform !== "win32") throw new Error("Ye update Windows ke liye hai.");
+  const stat = await fs.promises.stat(sourcePath);
+  if (!stat.isFile() || stat.size < 10 * 1024 * 1024) throw new Error("Update EXE file invalid ya incomplete hai.");
+  const handle = await fs.promises.open(sourcePath, "r");
+  const signature = Buffer.alloc(2);
+  await handle.read(signature, 0, 2, 0);
+  await handle.close();
+  if (signature.toString("ascii") !== "MZ") throw new Error("Selected file valid Windows EXE nahi hai.");
+  const installExe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const stage = path.join(app.getPath("userData"), "updates");
+  await fs.promises.mkdir(stage, { recursive: true });
+  const stagedExe = path.join(stage, "Mahadev-AI-Shorts-Maker-update.exe");
+  await fs.promises.copyFile(sourcePath, stagedExe);
+  const ps1 = path.join(stage, "apply-update.ps1");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$pidToWait = " + process.pid,
+    "$target = " + JSON.stringify(installExe),
+    "$source = " + JSON.stringify(stagedExe),
+    "try { Wait-Process -Id $pidToWait -Timeout 90 -ErrorAction SilentlyContinue } catch {}",
+    "Start-Sleep -Seconds 2",
+    "Copy-Item -LiteralPath $source -Destination $target -Force",
+    "Start-Process -FilePath $target"
+  ].join("\r\n");
+  await fs.promises.writeFile(ps1, script, "utf8");
+  spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  setTimeout(() => app.quit(), 500);
+  return { success: true, message: "Update staged. App close hote hi update apply hoga." };
+}
+async function downloadOnlineUpdate(url, expectedName) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") throw new Error("Untrusted update download URL.");
+  if (!/^Mahadev-AI-Shorts-Maker-.*\.exe$/i.test(expectedName)) throw new Error("Unexpected update filename.");
+  const response = await fetch(url, { redirect: "follow" });
+  if (!response.ok || !response.body) throw new Error("Update download failed: HTTP " + response.status);
+  const destination = path.join(app.getPath("userData"), "updates", expectedName);
+  await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+  const temp = destination + ".download";
+  let received = 0;
+  const total = Number(response.headers.get("content-length")) || 0;
+  const meter = new Transform({ transform(chunk, enc, cb) {
+    received += chunk.length;
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send("app-update:progress", { received, total, percent: total ? Math.min(99, Math.floor(received / total * 100)) : null });
+    cb(null, chunk);
+  }});
+  await pipeline(Readable.fromWeb(response.body), meter, fs.createWriteStream(temp));
+  const stat = await fs.promises.stat(temp);
+  if (stat.size < 10 * 1024 * 1024) { await fs.promises.unlink(temp); throw new Error("Downloaded update is incomplete."); }
+  await fs.promises.rename(temp, destination);
+  return destination;
+}
+async function chooseUpdateFile() {
+  const result = await dialog.showOpenDialog({ title: "Select Mahadev AI Shorts Maker update EXE", properties: ["openFile"], filters: [{ name: "Windows EXE", extensions: ["exe"] }] });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  return stageUpdate(result.filePaths[0]);
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1180, height: 900, minWidth: 900, minHeight: 650,
@@ -93,6 +169,9 @@ function createWindow() {
   win.loadFile("index.html");
 }
 
+ipcMain.handle("app-update:check", () => checkOnlineUpdate());
+ipcMain.handle("app-update:download-install", async (_event, url, name) => { const file = await downloadOnlineUpdate(url, name); return stageUpdate(file); });
+ipcMain.handle("app-update:choose-file", () => chooseUpdateFile());
 ipcMain.handle("offline-ai:status", () => modelStatus());
 ipcMain.handle("offline-ai:download", async () => downloadModel());
 ipcMain.handle("offline-ai:load", async () => { await loadOfflineModel(); return modelStatus(); });
