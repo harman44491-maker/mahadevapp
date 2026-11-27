@@ -1,9 +1,11 @@
 const { contextBridge, shell, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("desktop", {
+  synthesizeSpeech: (text) => ipcRenderer.invoke("desktop:synthesize-speech", text),
   openExternal: (url) => {
     if (typeof url === "string" && /^https:\/\//i.test(url)) shell.openExternal(url);
   }
 });
+contextBridge.exposeInMainWorld("desktopSpeech", { synthesize: (text) => ipcRenderer.invoke("desktop:synthesize-speech", text) });
 contextBridge.exposeInMainWorld("appUpdater", {
   check: () => ipcRenderer.invoke("app-update:check"),
   downloadAndInstall: (url, name) => ipcRenderer.invoke("app-update:download-install", url, name),
