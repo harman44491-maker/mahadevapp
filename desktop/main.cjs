@@ -1,6 +1,7 @@
 const { app, BrowserWindow, shell, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { pipeline } = require("stream/promises");
 const { Readable, Transform } = require("stream");
 const { spawn } = require("child_process");
@@ -161,6 +162,23 @@ async function chooseUpdateFile() {
   return stageUpdate(result.filePaths[0]);
 }
 
+
+async function synthesizeSpeech(text) {
+  if (process.platform !== "win32") throw new Error("Windows built-in voice is available only in Windows EXE.");
+  if (typeof text !== "string" || !text.trim() || text.length > 1800) throw new Error("Narration must be 1–1800 characters.");
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mahadev-tts-"));
+  const txt = path.join(dir, "narration.txt");
+  const wav = path.join(dir, "narration.wav");
+  try {
+    await fs.promises.writeFile(txt, text, "utf8");
+    const ps = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate=0; $s.Volume=100; $voices=$s.GetInstalledVoices() | ForEach-Object {$_.VoiceInfo}; $hi=$voices | Where-Object {$_.Culture.Name -like 'hi-*'} | Select-Object -First 1; if($hi){$s.SelectVoice($hi.Name)}; $s.SetOutputToWaveFile(" + JSON.stringify(wav) + "); $t=[IO.File]::ReadAllText(" + JSON.stringify(txt) + ",[Text.Encoding]::UTF8); $s.Speak($t); $s.Dispose();";
+    await new Promise((resolve,reject)=>{ const p=spawn("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",ps],{windowsHide:true,stdio:["ignore","ignore","pipe"]});let err="";p.stderr.on("data",d=>err+=d.toString());p.on("error",reject);p.on("close",c=>c===0?resolve():reject(new Error("Windows voice generation failed: "+err.slice(-1000)))); });
+    const audio=await fs.promises.readFile(wav);
+    if(audio.length<1000) throw new Error("Windows voice returned an empty audio file.");
+    return {base64:audio.toString("base64"),bytes:audio.length};
+  } finally { await fs.promises.rm(dir,{recursive:true,force:true}); }
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1180, height: 900, minWidth: 900, minHeight: 650,
@@ -174,6 +192,7 @@ function createWindow() {
 ipcMain.handle("app-update:check", () => checkOnlineUpdate());
 ipcMain.handle("app-update:download-install", async (_event, url, name) => { const file = await downloadOnlineUpdate(url, name); return stageUpdate(file); });
 ipcMain.handle("app-update:choose-file", () => chooseUpdateFile());
+ipcMain.handle("desktop:synthesize-speech", (_event, text) => synthesizeSpeech(text));
 ipcMain.handle("offline-ai:status", () => modelStatus());
 ipcMain.handle("offline-ai:download", async () => downloadModel());
 ipcMain.handle("offline-ai:load", async () => { await loadOfflineModel(); return modelStatus(); });
