@@ -807,6 +807,68 @@ app.post("/api/video/process", requireUser, upload.single("video"), async (req, 
 });
 
 
+
+const aiHelperUsage = new Map();
+const AI_HELPER_DAILY_LIMIT = 10;
+function aiHelperQuota(userId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const current = aiHelperUsage.get(String(userId));
+  if (!current || current.day !== today) {
+    aiHelperUsage.set(String(userId), { day: today, count: 0 });
+    return aiHelperUsage.get(String(userId));
+  }
+  return current;
+}
+
+app.post("/api/ai/helper", requireUser, async (req, res) => {
+  const apiKey = process.env.GEMINI_API_KEY || "";
+  if (!apiKey) return res.status(503).json({
+    error: "AI_HELPER_NOT_CONFIGURED",
+    message: "AI Helper setup is pending. Add a Google AI Studio free-tier GEMINI_API_KEY in Render Environment. Do not enable paid billing."
+  });
+  const prompt = String(req.body?.prompt || "").trim().slice(0, 5000);
+  const taskType = String(req.body?.taskType || "general").slice(0, 40);
+  if (prompt.length < 3) return res.status(400).json({ error: "PROMPT_REQUIRED", message: "Apna kaam ya sawal likhein." });
+  const usage = aiHelperQuota(req.user.id);
+  if (usage.count >= AI_HELPER_DAILY_LIMIT) return res.status(429).json({
+    error: "AI_DAILY_LIMIT",
+    message: "Aaj ka free AI limit (10 requests) poora ho gaya. Kal phir try karein."
+  });
+  usage.count += 1;
+  try {
+    const model = "gemini-3.1-flash-lite";
+    const upstream = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + encodeURIComponent(apiKey), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: "You are Mahadev AI Helper inside a general-purpose creator productivity app. Help with safe everyday tasks: write and improve prompts, captions, scripts, summaries, explanations, study notes, planning, ideas, translations, and simple code. Reply in the user's language (Hindi/Hinglish/Punjabi/English). Be clear and practical. Do not claim to perform external actions; provide drafts or steps. If a task needs current facts, say when you cannot verify them. Keep responses concise but useful." }]
+        },
+        contents: [{ role: "user", parts: [{ text: "Task category: " + taskType + "\nUser request: " + prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 1200 }
+      })
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) {
+      if (usage.count > 0) usage.count -= 1;
+      const message = upstream.status === 429
+        ? "Google AI ka free quota abhi poora hai. Baad mein dobara try karein."
+        : "AI Helper abhi response nahi de pa raha. Thodi der baad try karein.";
+      return res.status(upstream.status === 429 ? 429 : 502).json({ error: "AI_PROVIDER_ERROR", message });
+    }
+    const answer = (data.candidates?.[0]?.content?.parts || []).map(part => part.text || "").join("\n").trim();
+    if (!answer) {
+      if (usage.count > 0) usage.count -= 1;
+      return res.status(502).json({ error: "AI_EMPTY_RESPONSE", message: "AI se jawab nahi mila. Dobara try karein." });
+    }
+    res.json({ success: true, answer, remainingToday: Math.max(0, AI_HELPER_DAILY_LIMIT - usage.count), model });
+  } catch (error) {
+    if (usage.count > 0) usage.count -= 1;
+    console.error("AI Helper request failed:", error.message);
+    res.status(502).json({ error: "AI_HELPER_FAILED", message: "AI Helper connection abhi available nahi hai." });
+  }
+});
+
 app.post("/api/photo/video", requireUser, upload.single("photo"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "PHOTO_REQUIRED", message: "Choose a photo first." });
   if (!req.file.mimetype.startsWith("image/")) return res.status(415).json({ error: "IMAGE_TYPE_REQUIRED", message: "Upload an image file." });
