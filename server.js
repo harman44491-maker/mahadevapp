@@ -225,7 +225,7 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "mahadev-ai-shorts-maker", time: new Date().toISOString() });
+  res.json({ ok: true, service: "mahadev-ai-shorts-maker", authReady: Boolean(dbPool && dbReady), time: new Date().toISOString() });
 });
 
 const authAttempts = new Map();
@@ -1268,6 +1268,21 @@ app.post("/api/auto/generate-preview", requireUser, async (req, res) => {
     const missingKey = error.message.includes("GEMINI_API_KEY_MISSING");
     return res.status(missingKey ? 503 : 502).json({ error: "AUTO_SHORT_GENERATION_FAILED", message: error.message });
   }
+});
+
+// Return consistent JSON errors for upload middleware and unexpected API failures.
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  if (error instanceof multer.MulterError) {
+    const tooLarge = error.code === "LIMIT_FILE_SIZE";
+    console.warn("Upload rejected:", error.code, error.field || "");
+    return res.status(tooLarge ? 413 : 400).json({
+      error: "UPLOAD_REJECTED",
+      message: tooLarge ? "Uploaded file is too large." : "The uploaded file field or format was not accepted."
+    });
+  }
+  console.error("Unhandled API error:", error.message);
+  return res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: "The server could not complete this request." });
 });
 
 app.listen(PORT, "0.0.0.0", async () => {
