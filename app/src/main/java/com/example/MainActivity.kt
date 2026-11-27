@@ -271,6 +271,13 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).verticalScroll(rememberScrollState()).padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        Card(colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color(0xFF17133D))) {
+            Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text("MAHADEV AI SHORTS MAKER", style = MaterialTheme.typography.headlineSmall, color = androidx.compose.ui.graphics.Color(0xFFFFD76A))
+                Text("CREATE  •  EDIT  •  AI ASSIST  •  PUBLISH", style = MaterialTheme.typography.labelLarge, color = androidx.compose.ui.graphics.Color.White)
+                Text("Short Videos  |  Photo Motion  |  AI Helper  |  YouTube + Facebook", style = MaterialTheme.typography.bodySmall, color = androidx.compose.ui.graphics.Color(0xFFE0DCFF))
+            }
+        }
         Text("MAHADEV", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         Text("AI Shorts Maker", style = MaterialTheme.typography.headlineMedium)
         Text("YouTube tools • Hindi workflow", style = MaterialTheme.typography.bodyMedium)
@@ -523,7 +530,7 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
             }
         }
 
-        PhotoToVideoFeature(sessionToken)
+        AiHelperFeature(sessionToken)\n\n        PhotoToVideoFeature(sessionToken)
 
         Card(modifier = Modifier.bringIntoViewRequester(publishSection)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
