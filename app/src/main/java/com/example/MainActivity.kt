@@ -477,6 +477,7 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
                 Text(selectedName, style = MaterialTheme.typography.bodySmall)
                 Button(
                     enabled = !busy && sessionToken.isNotBlank() && selectedVideo != null,
+                    modifier = Modifier.fillMaxWidth(),
                     onClick = { runTask {
                         val uri = selectedVideo ?: error("Choose a source video first")
                         val bytes = withContext(Dispatchers.IO) {
@@ -525,7 +526,7 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
                         selectedVideo = savedUri
                         selectedName = filename
                         "Hindi captioned 9:16 Short saved and selected for publishing (" + processed.size + " bytes)."
-                    } }, modifier = Modifier.fillMaxWidth()
+                    } }
                 ) { Text("Generate Hindi Short (30 sec)") }
             }
         }
