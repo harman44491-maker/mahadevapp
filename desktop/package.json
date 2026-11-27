@@ -1,0 +1,36 @@
+{
+  "name": "mahadev-ai-shorts-maker-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows test desktop app for Mahadev AI Shorts Maker",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.mahadev.aishortsmaker.desktop",
+    "productName": "Mahadev AI Shorts Maker",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "index.html"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}
