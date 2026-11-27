@@ -116,6 +116,8 @@ dependencies {
   implementation(libs.logging.interceptor)
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
+  // LiteRT-LM 0.17.1 is compatible with this project's Kotlin 2.2 compiler.
+  implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.1")
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
