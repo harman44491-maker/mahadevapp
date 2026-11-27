@@ -1,8 +1,8 @@
-const { contextBridge, shell, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("desktop", {
   synthesizeSpeech: (text) => ipcRenderer.invoke("desktop:synthesize-speech", text),
   openExternal: (url) => {
-    if (typeof url === "string" && /^https:\/\//i.test(url)) shell.openExternal(url);
+    return ipcRenderer.invoke("desktop:open-external", url);
   }
 });
 contextBridge.exposeInMainWorld("desktopSpeech", { synthesize: (text) => ipcRenderer.invoke("desktop:synthesize-speech", text) });
