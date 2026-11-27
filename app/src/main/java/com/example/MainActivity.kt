@@ -523,6 +523,8 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
             }
         }
 
+        PhotoToVideoFeature(sessionToken)
+
         Card(modifier = Modifier.bringIntoViewRequester(publishSection)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("4. Upload Your Video", style = MaterialTheme.typography.titleMedium)
