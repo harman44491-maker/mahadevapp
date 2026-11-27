@@ -4,6 +4,12 @@ contextBridge.exposeInMainWorld("desktop", {
     if (typeof url === "string" && /^https:\/\//i.test(url)) shell.openExternal(url);
   }
 });
+contextBridge.exposeInMainWorld("appUpdater", {
+  check: () => ipcRenderer.invoke("app-update:check"),
+  downloadAndInstall: (url, name) => ipcRenderer.invoke("app-update:download-install", url, name),
+  chooseFile: () => ipcRenderer.invoke("app-update:choose-file"),
+  onProgress: (callback) => { if (typeof callback !== "function") return; const listener = (_event, data) => callback(data); ipcRenderer.on("app-update:progress", listener); return () => ipcRenderer.removeListener("app-update:progress", listener); }
+});
 contextBridge.exposeInMainWorld("offlineAI", {
   status: () => ipcRenderer.invoke("offline-ai:status"),
   download: () => ipcRenderer.invoke("offline-ai:download"),
