@@ -869,20 +869,28 @@ app.post("/api/ai/helper", requireUser, async (req, res) => {
   }
 });
 
-app.post("/api/photo/video", requireUser, upload.single("photo"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "PHOTO_REQUIRED", message: "Choose a photo first." });
-  if (!req.file.mimetype.startsWith("image/")) return res.status(415).json({ error: "IMAGE_TYPE_REQUIRED", message: "Upload an image file." });
-  if (req.file.size > 15 * 1024 * 1024) return res.status(413).json({ error: "PHOTO_TOO_LARGE", message: "Photo must be under 15 MB." });
+app.post("/api/photo/video", requireUser, upload.fields([{ name: "photo", maxCount: 1 }, { name: "narrationAudio", maxCount: 1 }]), async (req, res) => {
+  const photo = req.files?.photo?.[0];
+  const narrationAudio = req.files?.narrationAudio?.[0];
+  if (!photo) return res.status(400).json({ error: "PHOTO_REQUIRED", message: "Choose a photo first." });
+  if (!photo.mimetype.startsWith("image/")) return res.status(415).json({ error: "IMAGE_TYPE_REQUIRED", message: "Upload an image file." });
+  if (photo.size > 15 * 1024 * 1024) return res.status(413).json({ error: "PHOTO_TOO_LARGE", message: "Photo must be under 15 MB." });
+  const narrationText = String(req.body.narrationText || "").trim().slice(0, 1800);
+  if (!narrationText) return res.status(400).json({ error: "NARRATION_REQUIRED", message: "Write a photo explanation or how-to narration." });
+  if (!narrationAudio || narrationAudio.mimetype !== "audio/wav" || narrationAudio.size > 12 * 1024 * 1024) return res.status(400).json({ error: "NARRATION_AUDIO_REQUIRED", message: "Generate the voice narration in the desktop app first." });
   try {
-    const result = await makePhotoMotionVideo(req.file.buffer, {
+    const result = await makePhotoMotionVideo(photo.buffer, {
       durationSeconds: req.body.durationSeconds,
-      style: req.body.style
+      style: req.body.style,
+      narrationText,
+      narrationAudio: narrationAudio.buffer
     });
     res.set({
       "Content-Type": "video/mp4",
-      "Content-Disposition": 'attachment; filename="mahadev-photo-motion.mp4"',
+      "Content-Disposition": 'attachment; filename="mahadev-photo-explainer.mp4"',
       "X-Video-Duration": String(result.durationSeconds),
-      "X-Video-Style": result.style
+      "X-Video-Style": result.style,
+      "X-Video-Narration": "enabled"
     });
     res.status(200).send(result.buffer);
   } catch (e) {
