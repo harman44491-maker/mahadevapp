@@ -1,10 +1,10 @@
 name: Rohitsworld Auto Publish
 on:
   schedule:
-    # GitHub scheduled runs can be delayed or skipped. Retry every 15 minutes
-    # across the UTC hours covering 9 AM, 2 PM and 7 PM India time.
-    # The API's IST slot key + database unique index make retries idempotent.
-    - cron: "*/15 3,4,8,9,13,14 * * *"
+    # Retry every 15 minutes across extended catch-up windows for each IST slot.
+    # The API accepts retries for 150 minutes after 9 AM, 2 PM and 7 PM IST.
+    # Its database unique index prevents duplicate publishing for the same slot.
+    - cron: "*/15 3-6,8-11,13-16 * * *"
   push:
     branches: [main]
     paths:
