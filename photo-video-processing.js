@@ -30,7 +30,7 @@ async function makePhotoMotionVideo(buffer, options = {}) {
     if (audio) await fs.writeFile(audio, options.narrationAudio);
     if (subtitles) {
       const clean = String(options.narrationText).replace(/[\r\n]+/g, " ").replace(/-->/g, " ").trim();
-      const words = clean.split(/\\s+/).filter(Boolean);
+      const words = clean.split(/\s+/).filter(Boolean);
       const chunks = [];
       for (let i = 0; i < words.length; i += 7) chunks.push(words.slice(i, i + 7).join(" "));
       const stamp = seconds => { const ms=Math.max(0,Math.round(seconds*1000)); const h=String(Math.floor(ms/3600000)).padStart(2,"0"); const m=String(Math.floor(ms%3600000/60000)).padStart(2,"0"); const s=String(Math.floor(ms%60000/1000)).padStart(2,"0"); const z=String(ms%1000).padStart(3,"0"); return h+":"+m+":"+s+","+z; };
