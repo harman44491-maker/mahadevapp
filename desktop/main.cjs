@@ -187,9 +187,18 @@ function createWindow() {
     backgroundColor: "#0b1020",
     webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
-  win.loadFile("index.html");
+  win.loadFile(path.join(__dirname, "index.html"));
 }
 
+ipcMain.handle("desktop:open-external", async (_event, rawUrl) => {
+  if (typeof rawUrl !== "string" || rawUrl.length > 2081) throw new Error("Invalid sign-in URL.");
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { throw new Error("Invalid sign-in URL."); }
+  const allowedHosts = new Set(["accounts.google.com", "www.facebook.com", "facebook.com"]);
+  if (parsed.protocol !== "https:" || !allowedHosts.has(parsed.hostname)) throw new Error("Only approved Google and Facebook sign-in pages can be opened.");
+  await shell.openExternal(parsed.toString());
+  return { success: true };
+});
 ipcMain.handle("app-update:check", () => checkOnlineUpdate());
 ipcMain.handle("app-update:download-install", async (_event, url, name) => { const file = await downloadOnlineUpdate(url, name); return stageUpdate(file); });
 ipcMain.handle("app-update:choose-file", () => chooseUpdateFile());
