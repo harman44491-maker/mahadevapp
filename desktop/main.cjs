@@ -103,6 +103,7 @@ async function checkOnlineUpdate() {
 async function stageUpdate(sourcePath) {
   if (!app.isPackaged) throw new Error("Update installation sirf packaged Windows EXE me available hai.");
   if (process.platform !== "win32") throw new Error("Ye update Windows ke liye hai.");
+  if (!path.basename(sourcePath).startsWith(UPDATE_ASSET_PREFIX)) throw new Error("Sirf Mahadev AI Shorts Maker ka official update EXE select karein.");
   const stat = await fs.promises.stat(sourcePath);
   if (!stat.isFile() || stat.size < 10 * 1024 * 1024) throw new Error("Update EXE file invalid ya incomplete hai.");
   const handle = await fs.promises.open(sourcePath, "r");
