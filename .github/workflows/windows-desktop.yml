@@ -5,7 +5,6 @@ on:
     paths:
       - "desktop/**"
       - ".github/workflows/windows-desktop.yml"
-  push:
     tags:
       - "v*"
   workflow_dispatch:
@@ -31,8 +30,7 @@ jobs:
         working-directory: desktop
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          node -e "const fs=require('fs');const p=require('./package.json');p.version=process.env.VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\\n')" 
+          node -e "const fs=require('fs');const p=require('./package.json');p.version=process.env.VERSION.replace(/^v/,'');fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\\n')"
         env:
           VERSION: ${{ github.ref_name }}
       - name: Install desktop dependencies
