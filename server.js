@@ -8,6 +8,7 @@ const { google } = require("googleapis");
 const multer = require("multer");
 const { Readable } = require("stream");
 const { makeHindiShort } = require("./video-processing");
+const { makePhotoMotionVideo } = require("./photo-video-processing");
 const { createOriginalShort } = require("./ai-short-generator");
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v27.0";
 
@@ -219,7 +220,7 @@ app.get("/", (_req, res) => {
     name: "Mahadev AI Shorts Maker API",
     status: "running",
     version: "1.2.0",
-    endpoints: ["/health", "/api/auth/signup", "/api/auth/login", "/api/auth/me", "/api/auth/logout", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/auth/facebook", "/auth/facebook/callback", "/api/facebook/pages", "/api/facebook/select-page", "/api/youtube/channel", "/api/youtube/upload", "/api/video/process", "/api/facebook/reels", "/api/status/integrations"]
+    endpoints: ["/health", "/api/auth/signup", "/api/auth/login", "/api/auth/me", "/api/auth/logout", "/api/youtube/trending", "/auth/youtube", "/auth/youtube/callback", "/auth/facebook", "/auth/facebook/callback", "/api/facebook/pages", "/api/facebook/select-page", "/api/youtube/channel", "/api/youtube/upload", "/api/video/process", "/api/photo/video", "/api/facebook/reels", "/api/status/integrations"]
   });
 });
 
@@ -802,6 +803,29 @@ app.post("/api/video/process", requireUser, upload.single("video"), async (req, 
     console.error("Short processing failed:", e.message);
     const status = e.message.includes("GOOGLE_SERVICE_ACCOUNT_JSON") ? 503 : 422;
     res.status(status).json({ error: "SHORT_PROCESSING_FAILED", message: e.message });
+  }
+});
+
+
+app.post("/api/photo/video", requireUser, upload.single("photo"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "PHOTO_REQUIRED", message: "Choose a photo first." });
+  if (!req.file.mimetype.startsWith("image/")) return res.status(415).json({ error: "IMAGE_TYPE_REQUIRED", message: "Upload an image file." });
+  if (req.file.size > 15 * 1024 * 1024) return res.status(413).json({ error: "PHOTO_TOO_LARGE", message: "Photo must be under 15 MB." });
+  try {
+    const result = await makePhotoMotionVideo(req.file.buffer, {
+      durationSeconds: req.body.durationSeconds,
+      style: req.body.style
+    });
+    res.set({
+      "Content-Type": "video/mp4",
+      "Content-Disposition": 'attachment; filename="mahadev-photo-motion.mp4"',
+      "X-Video-Duration": String(result.durationSeconds),
+      "X-Video-Style": result.style
+    });
+    res.status(200).send(result.buffer);
+  } catch (e) {
+    console.error("Photo video generation failed:", e.message);
+    res.status(422).json({ error: "PHOTO_VIDEO_FAILED", message: e.message });
   }
 });
 
