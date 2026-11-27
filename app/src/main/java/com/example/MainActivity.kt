@@ -530,7 +530,9 @@ private fun ShortsMakerScreen(initialAuthToken: String = "") {
             }
         }
 
-        AiHelperFeature(sessionToken)\n\n        PhotoToVideoFeature(sessionToken)
+        AiHelperFeature(sessionToken)
+
+        PhotoToVideoFeature(sessionToken)
 
         Card(modifier = Modifier.bringIntoViewRequester(publishSection)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
